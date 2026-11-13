@@ -80,7 +80,7 @@ I run a small content page, and I kept opening YouTube Studio and Meta Business 
 
 - **Everything in one glance:** subscribers, followers, last-video views and comments on the home screen.
 - **No account on a third-party server:** the app calls Google and Meta directly. There is no backend, no analytics SDK and no ads.
-- **Keys stay on the device:** stored in the app's private storage, with Android backup switched off so they are not copied to the cloud.
+- **Keys stay on the device:** stored in the app's private storage, never shown again after saving, behind your fingerprint, face or screen lock, with Android backup switched off so they are not copied to the cloud.
 - **Tap to open, tap to refresh:** tapping the widget opens the app; a dedicated Refresh button updates it on demand.
 - **Built-in guides:** the app contains step-by-step help, with links, for getting a YouTube API key and renewing a Facebook token.
 - **Honest failure messages:** if Facebook rejects the token, the widget shows a short warning line, and the app shows a banner with a renewal guide.
@@ -116,10 +116,11 @@ I run a small content page, and I kept opening YouTube Studio and Meta Business 
 ### 5. App Screen
 - **Header** with a status chip: *Connected*, *Setup needed* or *Attention*
 - **Live stat tiles** that mirror the widget: subscribers / followers, last-video views and comments, last update time
-- **Connections:** one card for YouTube (API key, channel) and one for the Facebook Page (Page ID, Page token). Secrets are masked, with a **Show / Hide** toggle
+- **Connections:** one card for YouTube (API key, channel) and one for the Facebook Page (Page ID, Page token). Saved secrets are **write-only**: they show as *Saved* and can only be replaced, never viewed or copied
 - **Save & refresh** button with a loading state
 - **Warning cards** when YouTube or Facebook fails, with a shortcut that opens the matching guide
 - One collapsible **Help & guides** section containing *Add the widget*, *Renew Facebook token* and *Get a YouTube API key*, each with numbered steps and buttons that open the right page
+- **App lock:** the app asks for your fingerprint, face or screen lock when opened and again after 30 seconds in the background (the widget shows only counts and stays unlocked)
 - Consistent dark design that matches the widget
 
 ---
@@ -153,6 +154,9 @@ I run a small content page, and I kept opening YouTube Studio and Meta Business 
 - `HttpURLConnection` + `org.json` (no Retrofit/OkHttp needed), YouTube Data API v3, Facebook Graph API v21.0
 - `SharedPreferences` in private app storage for keys and the cached numbers
 
+**Security:**
+- AndroidX Biometric 1.1.0 for the app lock (biometrics or device credential)
+
 **Build:**
 - Gradle 9.3.1, Android Gradle Plugin 9.1.1, Java 17, compileSdk 37
 
@@ -164,7 +168,7 @@ See `gradle/libs.versions.toml` and `app/build.gradle.kts` for exact versions.
 
 Small single-module app with a clear split between UI, data fetching and background work:
 
-- `MainActivity.kt` — Compose settings screen, last-result view, error banner and the collapsible Help guides
+- `MainActivity.kt` — app lock (biometric prompt), Compose settings screen with write-only key fields, live stat tiles, error banners and the collapsible Help guides
 - `StatsWidget.kt` — the Glance widget (`StatsWidget`), its receiver (`StatsWidgetReceiver`), the refresh action and the number formatter
 - `Repo.kt` — fetches YouTube and Facebook independently, caches the result and redraws the widget
 - `Store.kt` — settings and cached stats on top of `SharedPreferences`
@@ -241,9 +245,13 @@ Never commit or share these values. They exist only in the app on your device.
 |---|---|
 | `INTERNET` | Call the YouTube and Facebook APIs |
 | `ACCESS_NETWORK_STATE` | Let WorkManager run refreshes only when online |
+| `USE_BIOMETRIC` / `USE_FINGERPRINT` | App lock (fingerprint, face or screen lock) |
+| `WAKE_LOCK`, `RECEIVE_BOOT_COMPLETED`, `FOREGROUND_SERVICE` | Added by WorkManager so the scheduled refresh survives reboots and runs reliably |
 
 - No ads, no analytics, no crash-reporting SDK, no backend.
 - API keys and the cached numbers are stored in the app's private storage.
+- Saved keys are **write-only**: the app never puts them back on screen, so they cannot be revealed or copied. To change one, tap **Replace**.
+- The app is protected by the device lock (fingerprint, face, PIN, pattern or password). If the phone has no screen lock, the app opens without asking.
 - Android backup is disabled (`allowBackup="false"`), so keys are not copied to cloud backups.
 - Requests go straight from your device to Google and Meta.
 
@@ -256,6 +264,7 @@ Never commit or share these values. They exist only in the app on your device.
 - **Facebook tokens** can be invalidated, for example after a password change or if the app is removed from your account. The app shows a warning and a renewal guide.
 - **Refresh interval** cannot go below 15 minutes because of Android background limits. Use the Refresh button for an instant update.
 - It shows the **latest** video only, not totals across all videos.
+- Keys are kept in the app's private storage and are not encrypted beyond the Android app sandbox. The app lock and write-only fields protect against someone using your unlocked phone, not against a rooted device or a debuggable build.
 
 ---
 

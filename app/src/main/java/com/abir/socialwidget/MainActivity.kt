@@ -2,7 +2,11 @@ package com.abir.socialwidget
 
 import android.graphics.Color as AndroidColor
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import android.os.SystemClock
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -93,9 +97,16 @@ private val AppColors = darkColorScheme(
     error = Color(0xFFFF8A80),
 )
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
+    // The settings screen is only shown after the user passes the device lock (fingerprint, face or PIN).
+    private var unlocked by mutableStateOf(false)
+    private var lastStopAt = 0L
+    private var prompting = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        unlocked = savedInstanceState?.getBoolean(STATE_UNLOCKED) ?: false
+        lastStopAt = savedInstanceState?.getLong(STATE_STOPPED_AT) ?: 0L
         // The app is dark in every system theme, so keep the system bar icons light.
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
@@ -104,9 +115,100 @@ class MainActivity : ComponentActivity() {
         Scheduler.schedule(applicationContext)
         setContent {
             MaterialTheme(colorScheme = AppColors) {
-                Surface(modifier = Modifier.fillMaxSize(), color = Bg) { SettingsScreen() }
+                Surface(modifier = Modifier.fillMaxSize(), color = Bg) {
+                    if (unlocked) SettingsScreen() else LockScreen(onUnlock = { authenticate() })
+                }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val away = SystemClock.elapsedRealtime() - lastStopAt
+        if (lastStopAt == 0L || away > RELOCK_AFTER_MS) unlocked = false
+        if (!unlocked) authenticate()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        lastStopAt = SystemClock.elapsedRealtime()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(STATE_UNLOCKED, unlocked)
+        outState.putLong(STATE_STOPPED_AT, lastStopAt)
+    }
+
+    private fun authenticate() {
+        if (prompting) return
+        val manager = BiometricManager.from(this)
+        val strong = BiometricManager.Authenticators.BIOMETRIC_STRONG
+        val credential = BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        val allowed = listOf(strong or credential, credential, strong)
+            .firstOrNull { manager.canAuthenticate(it) == BiometricManager.BIOMETRIC_SUCCESS }
+        if (allowed == null) {
+            // The phone has no screen lock at all, so there is nothing to ask for.
+            unlocked = true
+            return
+        }
+        val info = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Unlock Social Stats")
+            .setSubtitle("Your connections are protected")
+            .setAllowedAuthenticators(allowed)
+            .apply { if (allowed and credential == 0) setNegativeButtonText("Cancel") }
+            .build()
+        prompting = true
+        BiometricPrompt(
+            this,
+            ContextCompat.getMainExecutor(this),
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    prompting = false
+                    unlocked = true
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    prompting = false // stay locked; the lock screen has an Unlock button
+                }
+            },
+        ).authenticate(info)
+    }
+
+    private companion object {
+        const val RELOCK_AFTER_MS = 30_000L
+        const val STATE_UNLOCKED = "unlocked"
+        const val STATE_STOPPED_AT = "stopped_at"
+    }
+}
+
+@Composable
+private fun LockScreen(onUnlock: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .safeDrawingPadding()
+            .padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Image(painterResource(R.drawable.ic_launcher), contentDescription = null, modifier = Modifier.size(72.dp))
+        Spacer(Modifier.height(20.dp))
+        Text("Social Stats is locked", color = TextHi, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Use your fingerprint, face or screen lock to see your connections.",
+            color = TextLo,
+            fontSize = 14.sp,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(28.dp))
+        Button(
+            onClick = onUnlock,
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color(0xFF10132A)),
+            modifier = Modifier.height(52.dp),
+        ) { Text("Unlock", fontWeight = FontWeight.SemiBold, fontSize = 16.sp) }
     }
 }
 
@@ -116,10 +218,15 @@ private fun SettingsScreen() {
     val scope = rememberCoroutineScope()
     val initial = remember { Store.loadSettings(context) }
 
-    var ytKey by remember { mutableStateOf(initial.ytKey) }
+    // Saved secrets are never loaded into the UI: the fields only ever hold a NEW value the user is typing.
+    var ytKey by remember { mutableStateOf("") }
+    var ytSaved by remember { mutableStateOf(initial.ytKey.isNotBlank()) }
+    var ytReplacing by remember { mutableStateOf(false) }
     var ytChannel by remember { mutableStateOf(initial.ytChannel) }
     var fbPageId by remember { mutableStateOf(initial.fbPageId) }
-    var fbToken by remember { mutableStateOf(initial.fbToken) }
+    var fbToken by remember { mutableStateOf("") }
+    var fbSaved by remember { mutableStateOf(initial.fbToken.isNotBlank()) }
+    var fbReplacing by remember { mutableStateOf(false) }
     var stats by remember { mutableStateOf(Store.loadStats(context)) }
     var busy by remember { mutableStateOf(false) }
 
@@ -128,8 +235,8 @@ private fun SettingsScreen() {
     var fbGuideOpen by remember { mutableStateOf(false) }
     var ytGuideOpen by remember { mutableStateOf(false) }
 
-    val ytReady = ytKey.isNotBlank() && ytChannel.isNotBlank()
-    val fbReady = fbPageId.isNotBlank() && fbToken.isNotBlank()
+    val ytReady = (ytSaved || ytKey.isNotBlank()) && ytChannel.isNotBlank()
+    val fbReady = fbPageId.isNotBlank() && (fbSaved || fbToken.isNotBlank())
     val hasError = stats.ytError.isNotBlank() || stats.fbError.isNotBlank()
 
     Column(
@@ -241,6 +348,9 @@ private fun SettingsScreen() {
             CardHeader(R.drawable.ic_youtube, "YouTube", "Data API v3")
             Spacer(Modifier.height(14.dp))
             SecretField(
+                saved = ytSaved,
+                replacing = ytReplacing,
+                onReplacingChange = { ytReplacing = it },
                 value = ytKey, onValueChange = { ytKey = it },
                 label = "API key",
             )
@@ -261,6 +371,9 @@ private fun SettingsScreen() {
             )
             Spacer(Modifier.height(10.dp))
             SecretField(
+                saved = fbSaved,
+                replacing = fbReplacing,
+                onReplacingChange = { fbReplacing = it },
                 value = fbToken, onValueChange = { fbToken = it },
                 label = "Page access token",
             )
@@ -275,7 +388,19 @@ private fun SettingsScreen() {
             colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color(0xFF10132A)),
             onClick = {
                 busy = true
-                Store.saveSettings(context, Settings(ytKey, ytChannel, fbPageId, fbToken))
+                // A blank secret field means "keep the saved one".
+                val current = Store.loadSettings(context)
+                Store.saveSettings(
+                    context,
+                    Settings(ytKey.ifBlank { current.ytKey }, ytChannel, fbPageId, fbToken.ifBlank { current.fbToken }),
+                )
+                val saved = Store.loadSettings(context)
+                ytSaved = saved.ytKey.isNotBlank()
+                fbSaved = saved.fbToken.isNotBlank()
+                ytKey = ""
+                fbToken = ""
+                ytReplacing = false
+                fbReplacing = false
                 Scheduler.schedule(context)
                 scope.launch {
                     stats = Repo.refreshAll(context)
@@ -392,7 +517,7 @@ private fun SettingsScreen() {
         }
 
         Text(
-            "Your keys stay on this device. Android backup is off, and the app talks directly to Google and Meta.",
+            "Your keys stay on this device, are never shown again after saving, and the app is protected by your screen lock. Android backup is off, and the app talks directly to Google and Meta.",
             color = TextLo,
             fontSize = 12.sp,
             textAlign = TextAlign.Center,
@@ -523,30 +648,86 @@ private fun AppField(
     )
 }
 
+/**
+ * Write-only secret field. A saved secret is never shown or copyable: it appears as "Saved" and can only be
+ * replaced. The text field only ever holds a new value the user is typing or pasting right now.
+ */
 @Composable
-private fun SecretField(value: String, onValueChange: (String) -> Unit, label: String) {
-    var visible by remember { mutableStateOf(false) }
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        label = { Text(label) },
-        singleLine = true,
-        shape = RoundedCornerShape(14.dp),
-        visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
-        trailingIcon = {
+private fun SecretField(
+    saved: Boolean,
+    replacing: Boolean,
+    onReplacingChange: (Boolean) -> Unit,
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+) {
+    if (saved && !replacing) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Panel2.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
+                .border(1.dp, Line, RoundedCornerShape(14.dp))
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(label, color = TextLo, fontSize = 12.sp)
+                Spacer(Modifier.height(2.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(7.dp).background(Good, CircleShape))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Saved on this device", color = TextHi, fontSize = 15.sp)
+                }
+            }
             Text(
-                if (visible) "Hide" else "Show",
+                "Replace",
                 color = Accent,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier
-                    .clickable { visible = !visible }
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                    .clickable { onReplacingChange(true) }
+                    .padding(horizontal = 6.dp, vertical = 10.dp),
             )
-        },
-        colors = fieldColors(),
-        modifier = Modifier.fillMaxWidth(),
-    )
+        }
+    } else {
+        var visible by remember { mutableStateOf(false) }
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = { Text(if (saved) "New $label" else label) },
+            singleLine = true,
+            shape = RoundedCornerShape(14.dp),
+            visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
+            trailingIcon = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (visible) "Hide" else "Show",
+                        color = Accent,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier
+                            .clickable { visible = !visible }
+                            .padding(horizontal = 8.dp, vertical = 10.dp),
+                    )
+                    if (saved) {
+                        Text(
+                            "Cancel",
+                            color = TextLo,
+                            fontSize = 13.sp,
+                            modifier = Modifier
+                                .clickable {
+                                    onValueChange("")
+                                    onReplacingChange(false)
+                                }
+                                .padding(horizontal = 8.dp, vertical = 10.dp),
+                        )
+                    }
+                }
+            },
+            colors = fieldColors(),
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
 }
 
 @Composable
