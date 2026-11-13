@@ -246,6 +246,21 @@ private fun SettingsScreen() {
 
     val uriHandler = LocalUriHandler.current
     val openUrl: (String) -> Unit = { url -> runCatching { uriHandler.openUri(url) } }
+    // Launch an installed app directly (e.g. YouTube Studio opens on its dashboard).
+    // The app is not given a web link, because Studio hands that on to the browser.
+    // If the app is not installed, open the link in the browser instead.
+    val openInApp: (String, String) -> Unit = { url, pkg ->
+        val launch = context.packageManager.getLaunchIntentForPackage(pkg)
+        if (launch != null) {
+            try {
+                context.startActivity(launch)
+            } catch (_: Exception) {
+                openUrl(url)
+            }
+        } else {
+            openUrl(url)
+        }
+    }
     // Pull down to refresh with the saved connections; same fetch as Save & refresh.
     val refresh: () -> Unit = {
         if (!busy) {
@@ -342,7 +357,7 @@ private fun SettingsScreen() {
                 views = stats.ytVideoViews,
                 comments = stats.ytComments,
                 title = stats.ytVideoTitle,
-                onClick = { if (ytReady) openUrl(youtubeDashboardUrl(stats.ytChannelId)) },
+                onClick = { if (ytReady) openInApp(youtubeDashboardUrl(stats.ytChannelId), YOUTUBE_STUDIO_PACKAGE) },
             )
             StatTile(
                 modifier = Modifier.weight(1f),
@@ -565,6 +580,8 @@ private fun SettingsScreen() {
 }
 
 /** Opens the channel's YouTube Studio dashboard; falls back to Studio's start page until the ID is known. */
+private const val YOUTUBE_STUDIO_PACKAGE = "com.google.android.apps.youtube.creator"
+
 private fun youtubeDashboardUrl(channelId: String) =
     if (channelId.isNotBlank()) "https://studio.youtube.com/channel/$channelId" else "https://studio.youtube.com/"
 
