@@ -1,6 +1,7 @@
 package com.abir.socialwidget
 
 import android.content.Context
+import android.content.SharedPreferences
 
 data class Settings(
     val ytKey: String = "",
@@ -30,22 +31,50 @@ data class Stats(
 object Store {
     private fun sp(c: Context) = c.getSharedPreferences("socialwidget", Context.MODE_PRIVATE)
 
-    fun loadSettings(c: Context): Settings = sp(c).let {
-        Settings(
-            ytKey = it.getString("ytKey", "").orEmpty(),
-            ytChannel = it.getString("ytChannel", "").orEmpty(),
-            fbPageId = it.getString("fbPageId", "").orEmpty(),
-            fbToken = it.getString("fbToken", "").orEmpty(),
+    // The API key and Page token are stored encrypted (see Vault) under "<name>_enc".
+    // The channel and Page ID are public identifiers and stay as plain text.
+
+    @Synchronized
+    fun loadSettings(c: Context): Settings {
+        val p = sp(c)
+        return Settings(
+            ytKey = readSecret(p, "ytKey"),
+            ytChannel = p.getString("ytChannel", "").orEmpty(),
+            fbPageId = p.getString("fbPageId", "").orEmpty(),
+            fbToken = readSecret(p, "fbToken"),
         )
     }
 
-    fun saveSettings(c: Context, s: Settings) {
-        sp(c).edit()
-            .putString("ytKey", s.ytKey.trim())
-            .putString("ytChannel", s.ytChannel.trim())
+    /** Returns false if a secret could not be encrypted on this device; in that case the old value is kept. */
+    @Synchronized
+    fun saveSettings(c: Context, s: Settings): Boolean {
+        val edit = sp(c).edit()
+        var ok = writeSecret(edit, "ytKey", s.ytKey.trim())
+        ok = writeSecret(edit, "fbToken", s.fbToken.trim()) && ok
+        edit.putString("ytChannel", s.ytChannel.trim())
             .putString("fbPageId", s.fbPageId.trim())
-            .putString("fbToken", s.fbToken.trim())
             .apply()
+        return ok
+    }
+
+    private fun readSecret(p: SharedPreferences, name: String): String {
+        val sealed = p.getString("${name}_enc", null)
+        if (sealed != null) return Vault.decrypt(sealed).orEmpty()
+        // One-time migration: an older version stored this value as plain text.
+        val legacy = p.getString(name, null)?.takeIf { it.isNotBlank() } ?: return ""
+        val migrated = Vault.encrypt(legacy)
+        if (migrated != null) p.edit().putString("${name}_enc", migrated).remove(name).apply()
+        return legacy
+    }
+
+    private fun writeSecret(edit: SharedPreferences.Editor, name: String, value: String): Boolean {
+        if (value.isBlank()) {
+            edit.remove("${name}_enc").remove(name)
+            return true
+        }
+        val sealed = Vault.encrypt(value) ?: return false
+        edit.putString("${name}_enc", sealed).remove(name)
+        return true
     }
 
     fun loadStats(c: Context): Stats = sp(c).let {

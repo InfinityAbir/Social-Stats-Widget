@@ -80,7 +80,7 @@ I run a small content page, and I kept opening YouTube Studio and Meta Business 
 
 - **Everything in one glance:** subscribers, followers, last-video views and comments on the home screen.
 - **No account on a third-party server:** the app calls Google and Meta directly. There is no backend, no analytics SDK and no ads.
-- **Keys stay on the device:** stored in the app's private storage, never shown again after saving, behind your fingerprint, face or screen lock, with Android backup switched off so they are not copied to the cloud.
+- **Keys stay on the device:** encrypted with the Android Keystore, never shown again after saving, behind your fingerprint, face or screen lock, with Android backup switched off so they are not copied to the cloud.
 - **Tap to open, tap to refresh:** tapping the widget opens the app; a dedicated Refresh button updates it on demand.
 - **Built-in guides:** the app contains step-by-step help, with links, for getting a YouTube API key and renewing a Facebook token.
 - **Honest failure messages:** if Facebook rejects the token, the widget shows a short warning line, and the app shows a banner with a renewal guide.
@@ -156,6 +156,7 @@ I run a small content page, and I kept opening YouTube Studio and Meta Business 
 
 **Security:**
 - AndroidX Biometric 1.1.0 for the app lock (biometrics or device credential)
+- Android Keystore (AES-256-GCM) to encrypt the API key and Page token at rest
 
 **Build:**
 - Gradle 9.3.1, Android Gradle Plugin 9.1.1, Java 17, compileSdk 37
@@ -171,7 +172,8 @@ Small single-module app with a clear split between UI, data fetching and backgro
 - `MainActivity.kt` — app lock (biometric prompt), Compose settings screen with write-only key fields, live stat tiles, error banners and the collapsible Help guides
 - `StatsWidget.kt` — the Glance widget (`StatsWidget`), its receiver (`StatsWidgetReceiver`), the refresh action and the number formatter
 - `Repo.kt` — fetches YouTube and Facebook independently, caches the result and redraws the widget
-- `Store.kt` — settings and cached stats on top of `SharedPreferences`
+- `Store.kt` — settings and cached stats on top of `SharedPreferences`; secrets are saved through `Vault`
+- `Vault.kt` — AES-256-GCM encryption with a key that lives in the Android Keystore
 - `Scheduler.kt` — `RefreshWorker` plus periodic (15 min) and one-time WorkManager scheduling
 
 Data flow: **WorkManager / Refresh tap → `Repo.refreshAll()` → YouTube + Facebook APIs → `Store` → `StatsWidget.updateAll()`**.
@@ -249,7 +251,7 @@ Never commit or share these values. They exist only in the app on your device.
 | `WAKE_LOCK`, `RECEIVE_BOOT_COMPLETED`, `FOREGROUND_SERVICE` | Added by WorkManager so the scheduled refresh survives reboots and runs reliably |
 
 - No ads, no analytics, no crash-reporting SDK, no backend.
-- API keys and the cached numbers are stored in the app's private storage.
+- The API key and Page token are **encrypted** (AES-256-GCM, with a key held in the Android Keystore) before they are saved. Older plain-text values are migrated automatically on first launch. The channel, Page ID and cached numbers are stored in the app's private storage.
 - Saved keys are **write-only**: the app never puts them back on screen, so they cannot be revealed or copied. To change one, tap **Replace**.
 - The app is protected by the device lock (fingerprint, face, PIN, pattern or password). If the phone has no screen lock, the app opens without asking.
 - Android backup is disabled (`allowBackup="false"`), so keys are not copied to cloud backups.
@@ -264,7 +266,7 @@ Never commit or share these values. They exist only in the app on your device.
 - **Facebook tokens** can be invalidated, for example after a password change or if the app is removed from your account. The app shows a warning and a renewal guide.
 - **Refresh interval** cannot go below 15 minutes because of Android background limits. Use the Refresh button for an instant update.
 - It shows the **latest** video only, not totals across all videos.
-- Keys are kept in the app's private storage and are not encrypted beyond the Android app sandbox. The app lock and write-only fields protect against someone using your unlocked phone, not against a rooted device or a debuggable build.
+- Keys are encrypted at rest with a key held in the Android Keystore, and the app lock plus write-only fields protect against someone using your unlocked phone. A rooted or compromised phone, or a debuggable build, is outside what the app can protect against.
 
 ---
 
@@ -281,6 +283,7 @@ Social-Stats-Widget/
 │       │   ├── StatsWidget.kt       (Glance widget + receiver)
 │       │   ├── Repo.kt              (YouTube + Facebook API calls)
 │       │   ├── Store.kt             (settings and cached stats)
+│       │   ├── Vault.kt             (Keystore encryption for the keys)
 │       │   └── Scheduler.kt         (WorkManager scheduling)
 │       └── res/
 │           ├── drawable/            (icons, gradient card backgrounds)

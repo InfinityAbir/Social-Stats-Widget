@@ -229,6 +229,7 @@ private fun SettingsScreen() {
     var fbReplacing by remember { mutableStateOf(false) }
     var stats by remember { mutableStateOf(Store.loadStats(context)) }
     var busy by remember { mutableStateOf(false) }
+    var saveFailed by remember { mutableStateOf(false) }
 
     var helpOpen by remember { mutableStateOf(false) }
     var widgetGuideOpen by remember { mutableStateOf(false) }
@@ -390,7 +391,7 @@ private fun SettingsScreen() {
                 busy = true
                 // A blank secret field means "keep the saved one".
                 val current = Store.loadSettings(context)
-                Store.saveSettings(
+                saveFailed = !Store.saveSettings(
                     context,
                     Settings(ytKey.ifBlank { current.ytKey }, ytChannel, fbPageId, fbToken.ifBlank { current.fbToken }),
                 )
@@ -419,6 +420,15 @@ private fun SettingsScreen() {
             } else {
                 Text("Save & refresh", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
             }
+        }
+
+        if (saveFailed) {
+            Text(
+                "Your phone could not encrypt the key, so it was not saved. Please try again.",
+                color = Warn,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(start = 4.dp),
+            )
         }
 
         // ---- Help ----
