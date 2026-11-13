@@ -39,7 +39,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.ui.draw.clip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
@@ -212,6 +215,7 @@ private fun LockScreen(onUnlock: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsScreen() {
     val context = LocalContext.current
@@ -240,10 +244,29 @@ private fun SettingsScreen() {
     val fbReady = fbPageId.isNotBlank() && (fbSaved || fbToken.isNotBlank())
     val hasError = stats.ytError.isNotBlank() || stats.fbError.isNotBlank()
 
+    val uriHandler = LocalUriHandler.current
+    val openUrl: (String) -> Unit = { url -> runCatching { uriHandler.openUri(url) } }
+    // Pull down to refresh with the saved connections; same fetch as Save & refresh.
+    val refresh: () -> Unit = {
+        if (!busy) {
+            busy = true
+            scope.launch {
+                stats = Repo.refreshAll(context)
+                busy = false
+            }
+        }
+    }
+
+    PullToRefreshBox(
+        isRefreshing = busy,
+        onRefresh = refresh,
+        modifier = Modifier
+            .fillMaxSize()
+            .safeDrawingPadding(),
+    ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .safeDrawingPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 18.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -319,6 +342,7 @@ private fun SettingsScreen() {
                 views = stats.ytVideoViews,
                 comments = stats.ytComments,
                 title = stats.ytVideoTitle,
+                onClick = { if (ytReady) openUrl(youtubeDashboardUrl(stats.ytChannelId)) },
             )
             StatTile(
                 modifier = Modifier.weight(1f),
@@ -332,6 +356,7 @@ private fun SettingsScreen() {
                 views = stats.fbVideoViews,
                 comments = stats.fbComments,
                 title = stats.fbVideoTitle,
+                onClick = { if (fbPageId.isNotBlank()) openUrl("https://www.facebook.com/${fbPageId.trim()}") },
             )
         }
         Text(
@@ -536,7 +561,12 @@ private fun SettingsScreen() {
                 .padding(top = 6.dp, bottom = 18.dp),
         )
     }
+    }
 }
+
+/** Opens the channel's YouTube Studio dashboard; falls back to Studio's start page until the ID is known. */
+private fun youtubeDashboardUrl(channelId: String) =
+    if (channelId.isNotBlank()) "https://studio.youtube.com/channel/$channelId" else "https://studio.youtube.com/"
 
 // ---------- Building blocks ----------
 
@@ -753,17 +783,24 @@ private fun StatTile(
     views: Long,
     comments: Long,
     title: String,
+    onClick: () -> Unit,
 ) {
     Column(
         modifier = modifier
+            .clip(RoundedCornerShape(20.dp))
             .background(Brush.linearGradient(gradient), RoundedCornerShape(20.dp))
             .border(1.dp, accent.copy(alpha = 0.35f), RoundedCornerShape(20.dp))
+            .clickable(enabled = configured, onClick = onClick)
             .padding(14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Image(painterResource(iconRes), contentDescription = name, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(6.dp))
             Text(name, color = accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            if (configured) {
+                Spacer(Modifier.weight(1f))
+                Text("Open ›", color = accent.copy(alpha = 0.85f), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            }
         }
         Spacer(Modifier.height(12.dp))
         if (!configured) {

@@ -24,12 +24,12 @@ object Repo {
         if (settings.ytConfigured) {
             s = try {
                 val r = withContext(Dispatchers.IO) { fetchYoutube(settings.ytKey, settings.ytChannel) }
-                s.copy(ytSubs = r.subs, ytVideoViews = r.views, ytVideoTitle = r.title, ytComments = r.comments)
+                s.copy(ytSubs = r.subs, ytVideoViews = r.views, ytVideoTitle = r.title, ytComments = r.comments, ytChannelId = r.channelId)
             } catch (e: Exception) {
                 s.copy(ytError = e.message ?: "YouTube error")
             }
         } else {
-            s = s.copy(ytSubs = -1, ytVideoViews = -1, ytVideoTitle = "", ytComments = -1)
+            s = s.copy(ytSubs = -1, ytVideoViews = -1, ytVideoTitle = "", ytComments = -1, ytChannelId = "")
         }
 
         if (settings.fbConfigured) {
@@ -51,7 +51,13 @@ object Repo {
 
     // ---------- YouTube ----------
 
-    private class Yt(val subs: Long, val views: Long, val title: String, val comments: Long = -1)
+    private class Yt(
+        val subs: Long,
+        val views: Long,
+        val title: String,
+        val comments: Long = -1,
+        val channelId: String = "",
+    )
 
     private fun fetchYoutube(key: String, channelInput: String): Yt {
         val k = enc(key.trim())
@@ -69,6 +75,7 @@ object Repo {
         val items = channel.optJSONArray("items")
         if (items == null || items.length() == 0) throw IOException("YouTube channel not found")
         val item = items.getJSONObject(0)
+        val channelId = item.optString("id")
 
         val stats = item.getJSONObject("statistics")
         val subs = if (stats.optBoolean("hiddenSubscriberCount", false)) -1L
@@ -76,14 +83,14 @@ object Repo {
 
         val uploads = item.getJSONObject("contentDetails")
             .getJSONObject("relatedPlaylists").optString("uploads")
-        if (uploads.isBlank()) return Yt(subs, -1, "")
+        if (uploads.isBlank()) return Yt(subs, -1, "", channelId = channelId)
 
         val pl = get(
             "https://www.googleapis.com/youtube/v3/playlistItems" +
                 "?part=contentDetails&playlistId=${enc(uploads)}&maxResults=1&key=$k"
         )
         val plItems = pl.optJSONArray("items")
-        if (plItems == null || plItems.length() == 0) return Yt(subs, -1, "")
+        if (plItems == null || plItems.length() == 0) return Yt(subs, -1, "", channelId = channelId)
         val videoId = plItems.getJSONObject(0).getJSONObject("contentDetails").getString("videoId")
 
         val vid = get(
@@ -91,12 +98,12 @@ object Repo {
                 "?part=statistics,snippet&id=${enc(videoId)}&key=$k"
         )
         val vItems = vid.optJSONArray("items")
-        if (vItems == null || vItems.length() == 0) return Yt(subs, -1, "")
+        if (vItems == null || vItems.length() == 0) return Yt(subs, -1, "", channelId = channelId)
         val v = vItems.getJSONObject(0)
         val views = v.getJSONObject("statistics").optString("viewCount", "-1").toLongOrNull() ?: -1L
         val title = v.getJSONObject("snippet").optString("title")
         val comments = v.getJSONObject("statistics").optString("commentCount", "-1").toLongOrNull() ?: -1L
-        return Yt(subs, views, title, comments)
+        return Yt(subs, views, title, comments, channelId)
     }
 
     // ---------- Facebook ----------

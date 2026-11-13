@@ -19,6 +19,7 @@ data class Stats(
     val ytVideoViews: Long = -1,
     val ytVideoTitle: String = "",
     val ytComments: Long = -1,
+    val ytChannelId: String = "",
     val ytError: String = "",
     val fbFollowers: Long = -1,
     val fbVideoViews: Long = -1,
@@ -83,6 +84,7 @@ object Store {
             ytVideoViews = it.getLong("ytVideoViews", -1),
             ytVideoTitle = it.getString("ytVideoTitle", "").orEmpty(),
             ytComments = it.getLong("ytComments", -1),
+            ytChannelId = it.getString("ytChannelId", "").orEmpty(),
             ytError = it.getString("ytError", "").orEmpty(),
             fbFollowers = it.getLong("fbFollowers", -1),
             fbVideoViews = it.getLong("fbVideoViews", -1),
@@ -99,6 +101,7 @@ object Store {
             .putLong("ytVideoViews", s.ytVideoViews)
             .putString("ytVideoTitle", s.ytVideoTitle)
             .putLong("ytComments", s.ytComments)
+            .putString("ytChannelId", s.ytChannelId)
             .putString("ytError", s.ytError)
             .putLong("fbFollowers", s.fbFollowers)
             .putLong("fbVideoViews", s.fbVideoViews)

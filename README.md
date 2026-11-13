@@ -117,6 +117,8 @@ I run a small content page, and I kept opening YouTube Studio and Meta Business 
 - **Header** with a status chip: *Connected*, *Setup needed* or *Attention*
 - **Live stat tiles** that mirror the widget: subscribers / followers, last-video views and comments, last update time
 - **Connections:** one card for YouTube (API key, channel) and one for the Facebook Page (Page ID, Page token). Saved secrets are **write-only**: they show as *Saved* and can only be replaced, never viewed or copied
+- **Pull down to refresh** every number from the app screen
+- **Tap a tile to open it:** the YouTube tile opens your channel's YouTube Studio dashboard, the Facebook tile opens your Page
 - **Save & refresh** button with a loading state
 - **Warning cards** when YouTube or Facebook fails, with a shortcut that opens the matching guide
 - One collapsible **Help & guides** section containing *Add the widget*, *Renew Facebook token* and *Get a YouTube API key*, each with numbered steps and buttons that open the right page
