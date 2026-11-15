@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Social Stats</string>
-    <string name="widget_description">YouTube subscribers + last video views, Facebook followers</string>
+    <string name="widget_description">YouTube subscribers + last video views, Facebook followers + last reel views</string>
+    <string name="compact_widget_description">Compact 2x1: YouTube subscribers and Facebook followers with today\'s growth</string>
+    <string name="notif_channel_name">Milestones and alerts</string>
 </resources>

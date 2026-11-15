@@ -302,12 +302,14 @@ Social-Stats-Widget/
 
 ## Roadmap
 
-- [ ] Growth indicators (change since yesterday) and a small trend line
-- [ ] More widget sizes (compact 2x1, large 4x4 with a chart)
-- [ ] Optional milestone notifications (for example 10K followers)
+- [x] Growth indicators: today's change in subscribers and followers
+- [ ] Small trend line
+- [x] Compact 2x1 widget
+- [ ] Large 4x4 widget with a chart
+- [x] Optional milestone and "video taking off" notifications
 - [ ] More platforms (Instagram, TikTok)
 - [ ] Guided in-app token renewal
-- [ ] Choose which metrics to show per card
+- [x] Choose which metrics to show per card (views, comments, likes, reactions, shares, title, growth)
 - [ ] Play Store release with a signed bundle
 
 Contributions and issue reports are welcome.

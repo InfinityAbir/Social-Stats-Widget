@@ -1,6 +1,9 @@
 package com.abir.socialwidget
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.Color as AndroidColor
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import androidx.biometric.BiometricManager
@@ -8,8 +11,10 @@ import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.SystemBarStyle
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -44,6 +49,8 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.ui.draw.clip
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
@@ -232,7 +239,40 @@ private fun SettingsScreen() {
     var fbSaved by remember { mutableStateOf(initial.fbToken.isNotBlank()) }
     var fbReplacing by remember { mutableStateOf(false) }
     var stats by remember { mutableStateOf(Store.loadStats(context)) }
+    var display by remember { mutableStateOf(Store.loadDisplay(context)) }
     var busy by remember { mutableStateOf(false) }
+
+    // Today's change in subscribers / followers; recomputed whenever the numbers change.
+    val growth = remember(stats) { History.growth(context, stats) }
+
+    // Android 13+ asks before an app may post notifications. Alerts are switched on only if it is granted.
+    var pendingAlert by remember { mutableStateOf<((Display) -> Display)?>(null) }
+    val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val apply = pendingAlert
+        pendingAlert = null
+        if (granted && apply != null) {
+            display = apply(display).also { Store.saveDisplay(context, it) }
+            Scheduler.schedule(context)
+        }
+    }
+    // Save a change to the display or alert choices, redraw the widgets, and keep the background refresh in step.
+    val updateDisplay: (Display) -> Unit = { next ->
+        display = next
+        Store.saveDisplay(context, next)
+        if (next.anyAlerts) Scheduler.schedule(context) else Scheduler.cancelIfUnused(context)
+        scope.launch { Repo.redrawWidgets(context) }
+    }
+    val setAlert: ((Display) -> Display) -> Unit = { change ->
+        val needsPermission = Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        val turningOn = change(display).anyAlerts && !display.anyAlerts
+        if (needsPermission && turningOn) {
+            pendingAlert = change
+            notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            updateDisplay(change(display))
+        }
+    }
     var saveFailed by remember { mutableStateOf(false) }
 
     var helpOpen by remember { mutableStateOf(false) }
@@ -354,9 +394,10 @@ private fun SettingsScreen() {
                 configured = ytReady,
                 big = stats.ytSubs,
                 bigLabel = "subscribers",
-                views = stats.ytVideoViews,
-                comments = stats.ytComments,
-                title = stats.ytVideoTitle,
+                growth = if (display.ytGrowth) growth.yt else null,
+                kind = "LAST VIDEO",
+                metrics = ytMetrics(stats, display),
+                title = if (display.ytTitle) stats.ytVideoTitle else "",
                 onClick = { if (ytReady) openInApp(youtubeDashboardUrl(stats.ytChannelId), YOUTUBE_STUDIO_PACKAGE) },
             )
             StatTile(
@@ -368,9 +409,10 @@ private fun SettingsScreen() {
                 configured = fbReady,
                 big = stats.fbFollowers,
                 bigLabel = "followers",
-                views = stats.fbVideoViews,
-                comments = stats.fbComments,
-                title = stats.fbVideoTitle,
+                growth = if (display.fbGrowth) growth.fb else null,
+                kind = "LAST REEL",
+                metrics = fbMetrics(stats, display),
+                title = if (display.fbTitle) stats.fbVideoTitle else "",
                 onClick = { if (fbPageId.isNotBlank()) openUrl("https://www.facebook.com/${fbPageId.trim()}") },
             )
         }
@@ -381,6 +423,104 @@ private fun SettingsScreen() {
             fontSize = 12.sp,
             modifier = Modifier.padding(start = 4.dp),
         )
+
+        // ---- Display ----
+        SectionLabel("DISPLAY")
+
+        Card2 {
+            Text("Choose what the widgets and tiles show.", color = TextLo, fontSize = 12.sp)
+            Spacer(Modifier.height(12.dp))
+            Text("YouTube", color = YtRed, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            ChipGrid(
+                accent = YtRed,
+                chips = listOf(
+                    "Views" to display.ytViews,
+                    "Comments" to display.ytComments,
+                    "Likes" to display.ytLikes,
+                    "Title" to display.ytTitle,
+                    "Growth" to display.ytGrowth,
+                ),
+                onToggle = {
+                    updateDisplay(
+                        when (it) {
+                            0 -> display.copy(ytViews = !display.ytViews)
+                            1 -> display.copy(ytComments = !display.ytComments)
+                            2 -> display.copy(ytLikes = !display.ytLikes)
+                            3 -> display.copy(ytTitle = !display.ytTitle)
+                            else -> display.copy(ytGrowth = !display.ytGrowth)
+                        },
+                    )
+                },
+            )
+            Spacer(Modifier.height(14.dp))
+            Text("Facebook", color = FbBlue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            ChipGrid(
+                accent = FbBlue,
+                chips = listOf(
+                    "Views" to display.fbViews,
+                    "Comments" to display.fbComments,
+                    "Reactions" to display.fbReactions,
+                    "Shares" to display.fbShares,
+                    "Title" to display.fbTitle,
+                    "Growth" to display.fbGrowth,
+                ),
+                onToggle = {
+                    updateDisplay(
+                        when (it) {
+                            0 -> display.copy(fbViews = !display.fbViews)
+                            1 -> display.copy(fbComments = !display.fbComments)
+                            2 -> display.copy(fbReactions = !display.fbReactions)
+                            3 -> display.copy(fbShares = !display.fbShares)
+                            4 -> display.copy(fbTitle = !display.fbTitle)
+                            else -> display.copy(fbGrowth = !display.fbGrowth)
+                        },
+                    )
+                },
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "Growth shows today's change in subscribers and followers. Widgets fit two stats per row, so pick the ones you need most.",
+                color = TextLo,
+                fontSize = 11.sp,
+            )
+        }
+
+        // ---- Alerts ----
+        SectionLabel("ALERTS")
+
+        Card2 {
+            SwitchRow(
+                title = "Milestones",
+                subtitle = "Followers, subscribers and latest video views: 100, 200, 500, 1K, 2K, 5K, 10K and on.",
+                checked = display.notifyMilestones,
+                onChange = { on -> setAlert { it.copy(notifyMilestones = on) } },
+            )
+            Spacer(Modifier.height(14.dp))
+            SwitchRow(
+                title = "Video taking off",
+                subtitle = "Alert when your latest video or reel gains views fast.",
+                checked = display.notifyFastRise,
+                onChange = { on -> setAlert { it.copy(notifyFastRise = on) } },
+            )
+            if (display.notifyFastRise) {
+                Spacer(Modifier.height(10.dp))
+                Text("Alert at this many views per hour", color = TextLo, fontSize = 12.sp)
+                Spacer(Modifier.height(8.dp))
+                ChipGrid(
+                    accent = Accent,
+                    chips = RISE_THRESHOLDS.map { "%,d".format(Locale.US, it) to (display.riseThreshold == it) },
+                    onToggle = { updateDisplay(display.copy(riseThreshold = RISE_THRESHOLDS[it])) },
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "Checked on every refresh, about every 15 minutes while the phone is online.",
+                color = TextLo,
+                fontSize = 11.sp,
+            )
+        }
 
         // ---- Connections ----
         SectionLabel("CONNECTIONS")
@@ -797,8 +937,9 @@ private fun StatTile(
     configured: Boolean,
     big: Long,
     bigLabel: String,
-    views: Long,
-    comments: Long,
+    growth: Long?,
+    kind: String,
+    metrics: List<Metric>,
     title: String,
     onClick: () -> Unit,
 ) {
@@ -825,32 +966,103 @@ private fun StatTile(
             Text("Add your keys below", color = TextLo, fontSize = 12.sp)
         } else {
             Text(formatCount(big), color = TextHi, fontSize = 30.sp, fontWeight = FontWeight.Bold)
-            Text(bigLabel, color = TextLo, fontSize = 12.sp)
-            Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Image(
-                    painterResource(R.drawable.ic_eye),
-                    contentDescription = "Views",
-                    modifier = Modifier.size(14.dp),
-                    colorFilter = ColorFilter.tint(TextLo),
-                )
-                Spacer(Modifier.width(5.dp))
-                Text(formatCount(views), color = TextHi, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.width(14.dp))
-                Image(
-                    painterResource(R.drawable.ic_comment),
-                    contentDescription = "Comments",
-                    modifier = Modifier.size(13.dp),
-                    colorFilter = ColorFilter.tint(TextLo),
-                )
-                Spacer(Modifier.width(5.dp))
-                Text(formatCount(comments), color = TextHi, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                Text(bigLabel, color = TextLo, fontSize = 12.sp)
+                val g = growthText(growth)
+                if (g != null) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        g,
+                        color = if ((growth ?: 0) > 0) Good else Color(0xFFFF8A80),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                    )
+                }
+            }
+            if (metrics.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                Text(kind, color = TextLo.copy(alpha = 0.7f), fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                Spacer(Modifier.height(4.dp))
+            }
+            // Two small stats per row, like the widget.
+            metrics.chunked(2).forEachIndexed { row, pair ->
+                if (row > 0) Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    pair.forEachIndexed { i, m ->
+                        if (i > 0) Spacer(Modifier.width(14.dp))
+                        Image(
+                            painterResource(m.iconRes),
+                            contentDescription = m.desc,
+                            modifier = Modifier.size(14.dp),
+                            colorFilter = ColorFilter.tint(TextLo),
+                        )
+                        Spacer(Modifier.width(5.dp))
+                        Text(formatCount(m.value), color = TextHi, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
             if (title.isNotBlank()) {
                 Spacer(Modifier.height(8.dp))
                 Text(title, color = TextLo, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
+    }
+}
+
+/** Toggle chips laid out three to a row. [chips] is (label, selected); [onToggle] gets the chip's index. */
+@Composable
+private fun ChipGrid(accent: Color, chips: List<Pair<String, Boolean>>, onToggle: (Int) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        chips.withIndex().toList().chunked(3).forEach { rowChips ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                rowChips.forEach { (index, chip) ->
+                    val (label, on) = chip
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(50))
+                            .background(if (on) accent.copy(alpha = 0.18f) else Color.Transparent, RoundedCornerShape(50))
+                            .border(1.dp, if (on) accent.copy(alpha = 0.7f) else Line, RoundedCornerShape(50))
+                            .clickable { onToggle(index) }
+                            .padding(vertical = 9.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            label,
+                            color = if (on) accent else TextLo,
+                            fontSize = 13.sp,
+                            fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
+                            maxLines = 1,
+                        )
+                    }
+                }
+                // Keep chip widths equal on a short last row.
+                repeat(3 - rowChips.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SwitchRow(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, color = TextHi, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text(subtitle, color = TextLo, fontSize = 12.sp)
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color(0xFF10132A),
+                checkedTrackColor = Accent,
+                uncheckedThumbColor = TextLo,
+                uncheckedTrackColor = Panel2,
+                uncheckedBorderColor = Line,
+            ),
+        )
     }
 }
 

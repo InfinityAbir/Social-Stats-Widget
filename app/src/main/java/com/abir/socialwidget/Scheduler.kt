@@ -1,5 +1,7 @@
 package com.abir.socialwidget
 
+import android.appwidget.AppWidgetManager
+import android.content.ComponentName
 import android.content.Context
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -41,5 +43,14 @@ object Scheduler {
 
     fun cancel(context: Context) {
         WorkManager.getInstance(context).cancelUniqueWork(PERIODIC)
+    }
+
+    /** Stop the 15-minute refresh only when no widget is placed and no alert needs it. */
+    fun cancelIfUnused(context: Context) {
+        val app = context.applicationContext
+        val mgr = AppWidgetManager.getInstance(app)
+        val placed = listOf(StatsWidgetReceiver::class.java, CompactWidgetReceiver::class.java)
+            .any { mgr.getAppWidgetIds(ComponentName(app, it)).isNotEmpty() }
+        if (!placed && !Store.loadDisplay(app).anyAlerts) cancel(app)
     }
 }

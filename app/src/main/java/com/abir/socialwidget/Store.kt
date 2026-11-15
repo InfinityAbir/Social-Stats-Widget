@@ -20,17 +20,63 @@ data class Stats(
     val ytVideoTitle: String = "",
     val ytComments: Long = -1,
     val ytChannelId: String = "",
+    val ytVideoId: String = "",
+    val ytLikes: Long = -1,
     val ytError: String = "",
     val fbFollowers: Long = -1,
     val fbVideoViews: Long = -1,
     val fbVideoTitle: String = "",
     val fbComments: Long = -1,
+    val fbVideoId: String = "",
+    val fbReactions: Long = -1,
+    val fbShares: Long = -1,
     val fbError: String = "",
     val updatedAt: Long = 0,
 )
 
 object Store {
-    private fun sp(c: Context) = c.getSharedPreferences("socialwidget", Context.MODE_PRIVATE)
+    internal fun sp(c: Context) = c.getSharedPreferences("socialwidget", Context.MODE_PRIVATE)
+
+    // ---------- Display and alert preferences ----------
+
+    fun loadDisplay(c: Context): Display = sp(c).let {
+        val d = Display()
+        Display(
+            ytViews = it.getBoolean("d_ytViews", d.ytViews),
+            ytComments = it.getBoolean("d_ytComments", d.ytComments),
+            ytLikes = it.getBoolean("d_ytLikes", d.ytLikes),
+            ytTitle = it.getBoolean("d_ytTitle", d.ytTitle),
+            ytGrowth = it.getBoolean("d_ytGrowth", d.ytGrowth),
+            fbViews = it.getBoolean("d_fbViews", d.fbViews),
+            fbComments = it.getBoolean("d_fbComments", d.fbComments),
+            fbReactions = it.getBoolean("d_fbReactions", d.fbReactions),
+            fbShares = it.getBoolean("d_fbShares", d.fbShares),
+            fbTitle = it.getBoolean("d_fbTitle", d.fbTitle),
+            fbGrowth = it.getBoolean("d_fbGrowth", d.fbGrowth),
+            notifyMilestones = it.getBoolean("d_notifyMilestones", d.notifyMilestones),
+            notifyFastRise = it.getBoolean("d_notifyFastRise", d.notifyFastRise),
+            riseThreshold = it.getInt("d_riseThreshold", d.riseThreshold),
+        )
+    }
+
+    fun saveDisplay(c: Context, d: Display) {
+        sp(c).edit()
+            .putBoolean("d_ytViews", d.ytViews)
+            .putBoolean("d_ytComments", d.ytComments)
+            .putBoolean("d_ytLikes", d.ytLikes)
+            .putBoolean("d_ytTitle", d.ytTitle)
+            .putBoolean("d_ytGrowth", d.ytGrowth)
+            .putBoolean("d_fbViews", d.fbViews)
+            .putBoolean("d_fbComments", d.fbComments)
+            .putBoolean("d_fbReactions", d.fbReactions)
+            .putBoolean("d_fbShares", d.fbShares)
+            .putBoolean("d_fbTitle", d.fbTitle)
+            .putBoolean("d_fbGrowth", d.fbGrowth)
+            .putBoolean("d_notifyMilestones", d.notifyMilestones)
+            .putBoolean("d_notifyFastRise", d.notifyFastRise)
+            .putInt("d_riseThreshold", d.riseThreshold)
+            .apply()
+    }
 
     // The API key and Page token are stored encrypted (see Vault) under "<name>_enc".
     // The channel and Page ID are public identifiers and stay as plain text.
@@ -85,11 +131,16 @@ object Store {
             ytVideoTitle = it.getString("ytVideoTitle", "").orEmpty(),
             ytComments = it.getLong("ytComments", -1),
             ytChannelId = it.getString("ytChannelId", "").orEmpty(),
+            ytVideoId = it.getString("ytVideoId", "").orEmpty(),
+            ytLikes = it.getLong("ytLikes", -1),
             ytError = it.getString("ytError", "").orEmpty(),
             fbFollowers = it.getLong("fbFollowers", -1),
             fbVideoViews = it.getLong("fbVideoViews", -1),
             fbVideoTitle = it.getString("fbVideoTitle", "").orEmpty(),
             fbComments = it.getLong("fbComments", -1),
+            fbVideoId = it.getString("fbVideoId", "").orEmpty(),
+            fbReactions = it.getLong("fbReactions", -1),
+            fbShares = it.getLong("fbShares", -1),
             fbError = it.getString("fbError", "").orEmpty(),
             updatedAt = it.getLong("updatedAt", 0),
         )
@@ -102,11 +153,16 @@ object Store {
             .putString("ytVideoTitle", s.ytVideoTitle)
             .putLong("ytComments", s.ytComments)
             .putString("ytChannelId", s.ytChannelId)
+            .putString("ytVideoId", s.ytVideoId)
+            .putLong("ytLikes", s.ytLikes)
             .putString("ytError", s.ytError)
             .putLong("fbFollowers", s.fbFollowers)
             .putLong("fbVideoViews", s.fbVideoViews)
             .putString("fbVideoTitle", s.fbVideoTitle)
             .putLong("fbComments", s.fbComments)
+            .putString("fbVideoId", s.fbVideoId)
+            .putLong("fbReactions", s.fbReactions)
+            .putLong("fbShares", s.fbShares)
             .putString("fbError", s.fbError)
             .putLong("updatedAt", s.updatedAt)
             .apply()

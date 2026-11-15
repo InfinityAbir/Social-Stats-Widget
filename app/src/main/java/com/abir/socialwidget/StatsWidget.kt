@@ -3,6 +3,9 @@ package com.abir.socialwidget
 import android.content.Context
 import android.content.Intent
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -62,14 +65,23 @@ private fun trim1(d: Double): String {
 
 class StatsWidget : GlanceAppWidget() {
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        val settings = Store.loadSettings(context)
-        val stats = Store.loadStats(context)
-        provideContent { Content(settings, stats) }
+        provideContent {
+            // Read inside the composition and re-read on every saved change, so the widget never shows old numbers.
+            val tick by prefsTicks(context).collectAsState(0L)
+            val configured = remember(tick) { Store.loadConfigured(context) }
+            val stats = remember(tick) { Store.loadStats(context) }
+            val display = remember(tick) { Store.loadDisplay(context) }
+            val growth = remember(tick) { History.growth(context, stats) }
+            Content(configured, stats, display, growth)
+        }
     }
 }
 
+internal val GrowthUp = Color(0xFF59D68C)
+internal val GrowthDown = Color(0xFFFF8A80)
+
 @Composable
-private fun Content(settings: Settings, stats: Stats) {
+private fun Content(configured: Configured, stats: Stats, display: Display, growth: Growth) {
     val context = LocalContext.current
     Box(
         modifier = GlanceModifier
@@ -87,12 +99,12 @@ private fun Content(settings: Settings, stats: Stats) {
                     accent = YtRed,
                     iconRes = R.drawable.ic_youtube,
                     cardRes = R.drawable.card_yt,
-                    configured = settings.ytConfigured,
+                    configured = configured.yt,
                     big = stats.ytSubs,
                     bigLabel = "subscribers",
-                    views = stats.ytVideoViews,
-                    comments = stats.ytComments,
-                    title = stats.ytVideoTitle,
+                    growth = if (display.ytGrowth) growth.yt else null,
+                    metrics = ytMetrics(stats, display),
+                    title = if (display.ytTitle) stats.ytVideoTitle else "",
                     error = stats.ytError,
                 )
                 Spacer(GlanceModifier.width(8.dp))
@@ -102,12 +114,12 @@ private fun Content(settings: Settings, stats: Stats) {
                     accent = FbBlue,
                     iconRes = R.drawable.ic_facebook,
                     cardRes = R.drawable.card_fb,
-                    configured = settings.fbConfigured,
+                    configured = configured.fb,
                     big = stats.fbFollowers,
                     bigLabel = "followers",
-                    views = stats.fbVideoViews,
-                    comments = stats.fbComments,
-                    title = stats.fbVideoTitle,
+                    growth = if (display.fbGrowth) growth.fb else null,
+                    metrics = fbMetrics(stats, display),
+                    title = if (display.fbTitle && stats.fbVideoTitle.isNotBlank()) "Reel · " + stats.fbVideoTitle else "",
                     error = stats.fbError,
                 )
             }
@@ -158,8 +170,8 @@ private fun Panel(
     configured: Boolean,
     big: Long,
     bigLabel: String,
-    views: Long,
-    comments: Long,
+    growth: Long?,
+    metrics: List<Metric>,
     title: String,
     error: String,
 ) {
@@ -167,21 +179,21 @@ private fun Panel(
         modifier = modifier
             .fillMaxHeight()
             .background(ImageProvider(cardRes))
-            .padding(horizontal = 10.dp, vertical = 7.dp),
+            .padding(horizontal = 10.dp, vertical = 5.dp),
     ) {
-        Row(verticalAlignment = Alignment.Vertical.CenterVertically) {
-            Image(
-                provider = ImageProvider(iconRes),
-                contentDescription = label,
-                modifier = GlanceModifier.size(15.dp),
-            )
-            Spacer(GlanceModifier.width(5.dp))
-            Text(
-                text = label,
-                style = TextStyle(color = ColorProvider(accent), fontSize = 11.sp, fontWeight = FontWeight.Bold),
-            )
-        }
         if (!configured) {
+            Row(verticalAlignment = Alignment.Vertical.CenterVertically) {
+                Image(
+                    provider = ImageProvider(iconRes),
+                    contentDescription = label,
+                    modifier = GlanceModifier.size(15.dp),
+                )
+                Spacer(GlanceModifier.width(5.dp))
+                Text(
+                    text = label,
+                    style = TextStyle(color = ColorProvider(accent), fontSize = 11.sp, fontWeight = FontWeight.Bold),
+                )
+            }
             Spacer(GlanceModifier.height(6.dp))
             Text(
                 text = "Not set up",
@@ -192,47 +204,59 @@ private fun Panel(
                 style = TextStyle(color = ColorProvider(TextDim), fontSize = 10.sp),
             )
         } else {
+            // The brand icon sits beside the number (no separate name row), which leaves room for the title.
             Row(verticalAlignment = Alignment.Vertical.Bottom) {
+                Image(
+                    provider = ImageProvider(iconRes),
+                    contentDescription = label,
+                    modifier = GlanceModifier.size(18.dp).padding(bottom = 4.dp),
+                )
+                Spacer(GlanceModifier.width(6.dp))
                 Text(
                     text = formatCount(big),
-                    style = TextStyle(color = ColorProvider(TextMain), fontSize = 26.sp, fontWeight = FontWeight.Bold),
+                    style = TextStyle(color = ColorProvider(TextMain), fontSize = 24.sp, fontWeight = FontWeight.Bold),
                     maxLines = 1,
                 )
-                Text(
-                    text = " $bigLabel",
-                    style = TextStyle(color = ColorProvider(TextDim), fontSize = 10.sp),
-                    modifier = GlanceModifier.padding(bottom = 4.dp),
-                    maxLines = 1,
-                )
-            }
-            Spacer(GlanceModifier.height(3.dp))
-            Row(verticalAlignment = Alignment.Vertical.CenterVertically) {
-                Image(
-                    provider = ImageProvider(R.drawable.ic_eye),
-                    contentDescription = "Views",
-                    modifier = GlanceModifier.size(12.dp),
-                    colorFilter = ColorFilter.tint(ColorProvider(TextDim)),
-                )
-                Spacer(GlanceModifier.width(3.dp))
-                Text(
-                    text = formatCount(views),
-                    style = TextStyle(color = ColorProvider(TextMain), fontSize = 12.sp, fontWeight = FontWeight.Bold),
-                    maxLines = 1,
-                )
-                if (comments >= 0) {
-                    Spacer(GlanceModifier.width(10.dp))
-                    Image(
-                        provider = ImageProvider(R.drawable.ic_comment),
-                        contentDescription = "Comments",
-                        modifier = GlanceModifier.size(11.dp),
-                        colorFilter = ColorFilter.tint(ColorProvider(TextDim)),
-                    )
-                    Spacer(GlanceModifier.width(3.dp))
+                // Today's change sits above the label, so it adds no height.
+                val g = growthText(growth)
+                Column(modifier = GlanceModifier.padding(start = 4.dp, bottom = 2.dp)) {
+                    if (g != null) {
+                        Text(
+                            text = g,
+                            style = TextStyle(
+                                color = ColorProvider(if ((growth ?: 0) > 0) GrowthUp else GrowthDown),
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                            ),
+                            maxLines = 1,
+                        )
+                    }
                     Text(
-                        text = formatCount(comments),
-                        style = TextStyle(color = ColorProvider(TextMain), fontSize = 12.sp, fontWeight = FontWeight.Bold),
+                        text = bigLabel,
+                        style = TextStyle(color = ColorProvider(TextDim), fontSize = 10.sp),
                         maxLines = 1,
                     )
+                }
+            }
+            // Two small stats per row; the app lets you choose which ones appear.
+            metrics.chunked(2).forEach { pair ->
+                Spacer(GlanceModifier.height(3.dp))
+                Row(verticalAlignment = Alignment.Vertical.CenterVertically) {
+                    pair.forEachIndexed { i, m ->
+                        if (i > 0) Spacer(GlanceModifier.width(10.dp))
+                        Image(
+                            provider = ImageProvider(m.iconRes),
+                            contentDescription = m.desc,
+                            modifier = GlanceModifier.size(12.dp),
+                            colorFilter = ColorFilter.tint(ColorProvider(TextDim)),
+                        )
+                        Spacer(GlanceModifier.width(3.dp))
+                        Text(
+                            text = formatCount(m.value),
+                            style = TextStyle(color = ColorProvider(TextMain), fontSize = 12.sp, fontWeight = FontWeight.Bold),
+                            maxLines = 1,
+                        )
+                    }
                 }
             }
             if (error.isNotBlank()) {
@@ -269,6 +293,6 @@ class StatsWidgetReceiver : GlanceAppWidgetReceiver() {
 
     override fun onDisabled(context: Context) {
         super.onDisabled(context)
-        Scheduler.cancel(context)
+        Scheduler.cancelIfUnused(context)
     }
 }

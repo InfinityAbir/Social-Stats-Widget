@@ -41,4 +41,6 @@ dependencies {
   implementation(libs.androidx.glance.material3)
   implementation(libs.androidx.work.runtime.ktx)
   implementation(libs.androidx.biometric)
+  // Biometric pulls in an old fragment that cannot run Compose's permission launcher (requestCode crash).
+  implementation("androidx.fragment:fragment:1.8.6")
 }
