@@ -398,6 +398,7 @@ private fun SettingsScreen() {
                 kind = "LAST VIDEO",
                 metrics = ytMetrics(stats, display),
                 title = if (display.ytTitle) stats.ytVideoTitle else "",
+                posted = if (display.ytPosted) postedAgo(stats.ytPostedAt) else "",
                 onClick = { if (ytReady) openInApp(youtubeDashboardUrl(stats.ytChannelId), YOUTUBE_STUDIO_PACKAGE) },
             )
             StatTile(
@@ -413,6 +414,7 @@ private fun SettingsScreen() {
                 kind = "LAST REEL",
                 metrics = fbMetrics(stats, display),
                 title = if (display.fbTitle) stats.fbVideoTitle else "",
+                posted = if (display.fbPosted) postedAgo(stats.fbPostedAt) else "",
                 onClick = { if (fbPageId.isNotBlank()) openUrl("https://www.facebook.com/${fbPageId.trim()}") },
             )
         }
@@ -439,6 +441,7 @@ private fun SettingsScreen() {
                     "Comments" to display.ytComments,
                     "Likes" to display.ytLikes,
                     "Title" to display.ytTitle,
+                    "Posted" to display.ytPosted,
                     "Growth" to display.ytGrowth,
                 ),
                 onToggle = {
@@ -448,6 +451,7 @@ private fun SettingsScreen() {
                             1 -> display.copy(ytComments = !display.ytComments)
                             2 -> display.copy(ytLikes = !display.ytLikes)
                             3 -> display.copy(ytTitle = !display.ytTitle)
+                            4 -> display.copy(ytPosted = !display.ytPosted)
                             else -> display.copy(ytGrowth = !display.ytGrowth)
                         },
                     )
@@ -464,6 +468,7 @@ private fun SettingsScreen() {
                     "Reactions" to display.fbReactions,
                     "Shares" to display.fbShares,
                     "Title" to display.fbTitle,
+                    "Posted" to display.fbPosted,
                     "Growth" to display.fbGrowth,
                 ),
                 onToggle = {
@@ -474,6 +479,7 @@ private fun SettingsScreen() {
                             2 -> display.copy(fbReactions = !display.fbReactions)
                             3 -> display.copy(fbShares = !display.fbShares)
                             4 -> display.copy(fbTitle = !display.fbTitle)
+                            5 -> display.copy(fbPosted = !display.fbPosted)
                             else -> display.copy(fbGrowth = !display.fbGrowth)
                         },
                     )
@@ -941,6 +947,7 @@ private fun StatTile(
     kind: String,
     metrics: List<Metric>,
     title: String,
+    posted: String,
     onClick: () -> Unit,
 ) {
     Column(
@@ -1002,8 +1009,12 @@ private fun StatTile(
                     }
                 }
             }
-            if (title.isNotBlank()) {
+            if (posted.isNotBlank()) {
                 Spacer(Modifier.height(8.dp))
+                Text(posted, color = accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            }
+            if (title.isNotBlank()) {
+                Spacer(Modifier.height(if (posted.isBlank()) 8.dp else 2.dp))
                 Text(title, color = TextLo, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }

@@ -6,12 +6,14 @@ data class Display(
     val ytComments: Boolean = true,
     val ytLikes: Boolean = false,
     val ytTitle: Boolean = true,
+    val ytPosted: Boolean = true,
     val ytGrowth: Boolean = true,
     val fbViews: Boolean = true,
     val fbComments: Boolean = true,
     val fbReactions: Boolean = false,
     val fbShares: Boolean = false,
     val fbTitle: Boolean = true,
+    val fbPosted: Boolean = true,
     val fbGrowth: Boolean = true,
     val notifyMilestones: Boolean = false,
     val notifyFastRise: Boolean = false,
@@ -37,6 +39,22 @@ fun fbMetrics(s: Stats, d: Display): List<Metric> = buildList {
     if (d.fbComments && s.fbComments >= 0) add(Metric(R.drawable.ic_comment, s.fbComments, "Comments"))
     if (d.fbReactions && s.fbReactions >= 0) add(Metric(R.drawable.ic_like, s.fbReactions, "Reactions"))
     if (d.fbShares && s.fbShares >= 0) add(Metric(R.drawable.ic_share, s.fbShares, "Shares"))
+}
+
+/** "Posted 3h ago" for a publish time in epoch millis; "" when unknown. */
+fun postedAgo(postedAt: Long, now: Long = System.currentTimeMillis()): String {
+    if (postedAt <= 0) return ""
+    val mins = (now - postedAt) / 60_000
+    return "Posted " + when {
+        mins < 1 -> "just now"
+        mins < 60 -> "${mins}m ago"
+        mins < 24 * 60 -> {
+            val h = mins / 60
+            val m = mins % 60
+            if (h < 6 && m > 0) "${h}h ${m}m ago" else "${h}h ago"
+        }
+        else -> "${mins / (24 * 60)}d ago"
+    }
 }
 
 /** "▲ 12 today" / "▼ 3 today"; null when there is nothing to say. */

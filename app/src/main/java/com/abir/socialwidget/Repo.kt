@@ -30,7 +30,7 @@ object Repo {
                 val r = withContext(Dispatchers.IO) { fetchYoutube(settings.ytKey, settings.ytChannel) }
                 s.copy(
                     ytSubs = r.subs, ytVideoViews = r.views, ytVideoTitle = r.title, ytComments = r.comments,
-                    ytChannelId = r.channelId, ytVideoId = r.videoId, ytLikes = r.likes,
+                    ytChannelId = r.channelId, ytVideoId = r.videoId, ytLikes = r.likes, ytPostedAt = r.postedAt,
                 )
             } catch (e: Exception) {
                 s.copy(ytError = e.message ?: "YouTube error")
@@ -38,7 +38,7 @@ object Repo {
         } else {
             s = s.copy(
                 ytSubs = -1, ytVideoViews = -1, ytVideoTitle = "", ytComments = -1,
-                ytChannelId = "", ytVideoId = "", ytLikes = -1,
+                ytChannelId = "", ytVideoId = "", ytLikes = -1, ytPostedAt = 0,
             )
         }
 
@@ -47,7 +47,7 @@ object Repo {
                 val r = withContext(Dispatchers.IO) { fetchFacebook(settings.fbPageId, settings.fbToken) }
                 s.copy(
                     fbFollowers = r.followers, fbVideoViews = r.views, fbVideoTitle = r.title, fbComments = r.comments,
-                    fbVideoId = r.videoId, fbReactions = r.reactions, fbShares = r.shares,
+                    fbVideoId = r.videoId, fbReactions = r.reactions, fbShares = r.shares, fbPostedAt = r.postedAt,
                 )
             } catch (e: Exception) {
                 s.copy(fbError = e.message ?: "Facebook error")
@@ -55,7 +55,7 @@ object Repo {
         } else {
             s = s.copy(
                 fbFollowers = -1, fbVideoViews = -1, fbVideoTitle = "", fbComments = -1,
-                fbVideoId = "", fbReactions = -1, fbShares = -1,
+                fbVideoId = "", fbReactions = -1, fbShares = -1, fbPostedAt = 0,
             )
         }
 
@@ -84,7 +84,22 @@ object Repo {
         val channelId: String = "",
         val videoId: String = "",
         val likes: Long = -1,
+        val postedAt: Long = 0,
     )
+
+    /** Parses Meta/YouTube ISO timestamps ("...Z" or "...+0000") to epoch millis; 0 if unparseable. */
+    private fun parseTime(s: String): Long {
+        if (s.isBlank()) return 0
+        return runCatching {
+            val utc = s.endsWith("Z")
+            val fmt = java.text.SimpleDateFormat(
+                if (utc) "yyyy-MM-dd'T'HH:mm:ss'Z'" else "yyyy-MM-dd'T'HH:mm:ssZ",
+                java.util.Locale.US,
+            )
+            if (utc) fmt.timeZone = java.util.TimeZone.getTimeZone("UTC")
+            fmt.parse(s)?.time ?: 0L
+        }.getOrDefault(0L)
+    }
 
     private fun fetchYoutube(key: String, channelInput: String): Yt {
         val k = enc(key.trim())
@@ -131,7 +146,8 @@ object Repo {
         val title = v.getJSONObject("snippet").optString("title")
         val comments = v.getJSONObject("statistics").optString("commentCount", "-1").toLongOrNull() ?: -1L
         val likes = v.getJSONObject("statistics").optString("likeCount", "-1").toLongOrNull() ?: -1L
-        return Yt(subs, views, title, comments, channelId, videoId, likes)
+        val postedAt = parseTime(v.getJSONObject("snippet").optString("publishedAt"))
+        return Yt(subs, views, title, comments, channelId, videoId, likes, postedAt)
     }
 
     // ---------- Facebook ----------
@@ -144,6 +160,7 @@ object Repo {
         val videoId: String = "",
         val reactions: Long = -1,
         val shares: Long = -1,
+        val postedAt: Long = 0,
     )
 
     private fun fetchFacebook(pageId: String, token: String): Fb {
@@ -162,22 +179,53 @@ object Repo {
         var videoId = ""
         var comments = -1L
         var postId = ""
+        var postedAt = 0L
         try {
             // Use the reels edge: the plain /videos edge also returns Stories ("day" shares),
             // which would replace the last reel's numbers. Fall back to /videos only if the
             // reels edge errors (e.g. missing permission), not when it is simply empty.
-            val fields = "fields=id,title,description,views,post_id&limit=1&access_token=$t"
-            val vids = try {
-                get("https://graph.facebook.com/$FB_VERSION/$id/video_reels?$fields")
+            //
+            // A page token also sees reels that are scheduled but not live yet. They come back
+            // first (newest upload), so pull a few and skip anything not published.
+            val base = "id,title,description,views,post_id,created_time"
+            val extra = "$base,published,status,scheduled_publish_time"
+            fun load(fields: String): JSONObject = try {
+                get("https://graph.facebook.com/$FB_VERSION/$id/video_reels?fields=$fields&limit=10&access_token=$t")
             } catch (_: Exception) {
-                get("https://graph.facebook.com/$FB_VERSION/$id/videos?$fields")
+                get("https://graph.facebook.com/$FB_VERSION/$id/videos?fields=$fields&limit=10&access_token=$t")
+            }
+            val vids = try {
+                load(extra)
+            } catch (_: Exception) {
+                load(base) // a status field the API rejects must not break the whole lookup
             }
             val data = vids.optJSONArray("data")
-            if (data != null && data.length() > 0) {
-                val v = data.getJSONObject(0)
+            var picked: JSONObject? = null
+            if (data != null) {
+                for (i in 0 until data.length()) {
+                    val cand = data.getJSONObject(i)
+                    if (isLiveFbVideo(cand, id, t)) {
+                        picked = cand
+                        break
+                    }
+                }
+            }
+            if (picked != null) {
+                val v = picked
                 views = v.optLong("views", -1)
                 videoId = v.optString("id")
                 postId = v.optString("post_id")
+                // `created_time` is the upload time, hours earlier for a reel that was scheduled.
+                // The real go-live time is status.publishing_phase.publish_time.
+                val live = parseTime(
+                    v.optJSONObject("status")?.optJSONObject("publishing_phase")?.optString("publish_time").orEmpty()
+                )
+                val sched = v.optLong("scheduled_publish_time", 0) * 1000
+                postedAt = when {
+                    live > 0 -> live
+                    sched > 0 -> sched
+                    else -> parseTime(v.optString("created_time"))
+                }
                 title = v.optString("title").ifBlank { v.optString("description").lineSequence().firstOrNull().orEmpty() }
             }
         } catch (_: Exception) {
@@ -210,7 +258,31 @@ object Repo {
                 }
             }
         }
-        return Fb(followers, views, title, comments, videoId, reactions, shares)
+        return Fb(followers, views, title, comments, videoId, reactions, shares, postedAt)
+    }
+
+    /**
+     * False for a reel/video that is scheduled or otherwise not public yet. [pageEnc] and [tokenEnc]
+     * are already URL-encoded. Checks the status fields when Meta returned them, otherwise asks the
+     * reel's post for `is_published`. Unknown means live, so a missing permission never hides a reel.
+     */
+    private fun isLiveFbVideo(v: JSONObject, pageEnc: String, tokenEnc: String): Boolean {
+        if (v.has("published") && !v.optBoolean("published", true)) return false
+        val scheduledAt = v.optLong("scheduled_publish_time", 0)
+        if (scheduledAt > System.currentTimeMillis() / 1000) return false
+        val state = v.optJSONObject("status")?.optString("video_status").orEmpty()
+        if (state.isNotEmpty()) return state.equals("ready", ignoreCase = true) ||
+            state.equals("published", ignoreCase = true)
+        // No status data: fall back to the post.
+        val postId = v.optString("post_id")
+        if (postId.isBlank()) return true
+        return try {
+            val post = if (postId.contains('_')) postId else "${pageEnc}_$postId"
+            val p = get("https://graph.facebook.com/$FB_VERSION/${enc(post)}?fields=is_published&access_token=$tokenEnc")
+            p.optBoolean("is_published", true)
+        } catch (_: Exception) {
+            true
+        }
     }
 
     // ---------- HTTP ----------

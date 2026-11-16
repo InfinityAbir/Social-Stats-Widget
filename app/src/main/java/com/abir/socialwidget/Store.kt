@@ -22,6 +22,8 @@ data class Stats(
     val ytChannelId: String = "",
     val ytVideoId: String = "",
     val ytLikes: Long = -1,
+    /** When the last video went public, epoch millis; 0 means unknown. */
+    val ytPostedAt: Long = 0,
     val ytError: String = "",
     val fbFollowers: Long = -1,
     val fbVideoViews: Long = -1,
@@ -30,6 +32,7 @@ data class Stats(
     val fbVideoId: String = "",
     val fbReactions: Long = -1,
     val fbShares: Long = -1,
+    val fbPostedAt: Long = 0,
     val fbError: String = "",
     val updatedAt: Long = 0,
 )
@@ -46,12 +49,14 @@ object Store {
             ytComments = it.getBoolean("d_ytComments", d.ytComments),
             ytLikes = it.getBoolean("d_ytLikes", d.ytLikes),
             ytTitle = it.getBoolean("d_ytTitle", d.ytTitle),
+            ytPosted = it.getBoolean("d_ytPosted", d.ytPosted),
             ytGrowth = it.getBoolean("d_ytGrowth", d.ytGrowth),
             fbViews = it.getBoolean("d_fbViews", d.fbViews),
             fbComments = it.getBoolean("d_fbComments", d.fbComments),
             fbReactions = it.getBoolean("d_fbReactions", d.fbReactions),
             fbShares = it.getBoolean("d_fbShares", d.fbShares),
             fbTitle = it.getBoolean("d_fbTitle", d.fbTitle),
+            fbPosted = it.getBoolean("d_fbPosted", d.fbPosted),
             fbGrowth = it.getBoolean("d_fbGrowth", d.fbGrowth),
             notifyMilestones = it.getBoolean("d_notifyMilestones", d.notifyMilestones),
             notifyFastRise = it.getBoolean("d_notifyFastRise", d.notifyFastRise),
@@ -65,6 +70,8 @@ object Store {
             .putBoolean("d_ytComments", d.ytComments)
             .putBoolean("d_ytLikes", d.ytLikes)
             .putBoolean("d_ytTitle", d.ytTitle)
+            .putBoolean("d_ytPosted", d.ytPosted)
+            .putBoolean("d_fbPosted", d.fbPosted)
             .putBoolean("d_ytGrowth", d.ytGrowth)
             .putBoolean("d_fbViews", d.fbViews)
             .putBoolean("d_fbComments", d.fbComments)
@@ -133,6 +140,7 @@ object Store {
             ytChannelId = it.getString("ytChannelId", "").orEmpty(),
             ytVideoId = it.getString("ytVideoId", "").orEmpty(),
             ytLikes = it.getLong("ytLikes", -1),
+            ytPostedAt = it.getLong("ytPostedAt", 0),
             ytError = it.getString("ytError", "").orEmpty(),
             fbFollowers = it.getLong("fbFollowers", -1),
             fbVideoViews = it.getLong("fbVideoViews", -1),
@@ -141,6 +149,7 @@ object Store {
             fbVideoId = it.getString("fbVideoId", "").orEmpty(),
             fbReactions = it.getLong("fbReactions", -1),
             fbShares = it.getLong("fbShares", -1),
+            fbPostedAt = it.getLong("fbPostedAt", 0),
             fbError = it.getString("fbError", "").orEmpty(),
             updatedAt = it.getLong("updatedAt", 0),
         )
@@ -155,6 +164,8 @@ object Store {
             .putString("ytChannelId", s.ytChannelId)
             .putString("ytVideoId", s.ytVideoId)
             .putLong("ytLikes", s.ytLikes)
+            .putLong("ytPostedAt", s.ytPostedAt)
+            .putLong("fbPostedAt", s.fbPostedAt)
             .putString("ytError", s.ytError)
             .putLong("fbFollowers", s.fbFollowers)
             .putLong("fbVideoViews", s.fbVideoViews)

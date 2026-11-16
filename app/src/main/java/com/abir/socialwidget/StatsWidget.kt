@@ -58,6 +58,10 @@ fun formatCount(n: Long): String = when {
     else -> "%,d".format(Locale.US, n)
 }
 
+/** The widget's one spare line under the stats: "Posted 3h ago · title", whichever parts are on. */
+private fun widgetLine(posted: String, title: String): String =
+    listOf(posted, title).filter { it.isNotBlank() }.joinToString(" · ")
+
 private fun trim1(d: Double): String {
     val s = String.format(Locale.US, "%.1f", d)
     return if (s.endsWith(".0")) s.dropLast(2) else s
@@ -104,7 +108,10 @@ private fun Content(configured: Configured, stats: Stats, display: Display, grow
                     bigLabel = "subscribers",
                     growth = if (display.ytGrowth) growth.yt else null,
                     metrics = ytMetrics(stats, display),
-                    title = if (display.ytTitle) stats.ytVideoTitle else "",
+                    title = widgetLine(
+                        if (display.ytPosted) postedAgo(stats.ytPostedAt) else "",
+                        if (display.ytTitle) stats.ytVideoTitle else "",
+                    ),
                     error = stats.ytError,
                 )
                 Spacer(GlanceModifier.width(8.dp))
@@ -119,7 +126,10 @@ private fun Content(configured: Configured, stats: Stats, display: Display, grow
                     bigLabel = "followers",
                     growth = if (display.fbGrowth) growth.fb else null,
                     metrics = fbMetrics(stats, display),
-                    title = if (display.fbTitle && stats.fbVideoTitle.isNotBlank()) "Reel · " + stats.fbVideoTitle else "",
+                    title = widgetLine(
+                        if (display.fbPosted) postedAgo(stats.fbPostedAt) else "",
+                        if (display.fbTitle && stats.fbVideoTitle.isNotBlank()) "Reel · " + stats.fbVideoTitle else "",
+                    ),
                     error = stats.fbError,
                 )
             }
