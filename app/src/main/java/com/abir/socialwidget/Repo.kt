@@ -45,10 +45,16 @@ object Repo {
         if (settings.fbConfigured) {
             s = try {
                 val r = withContext(Dispatchers.IO) { fetchFacebook(settings.fbPageId, settings.fbToken) }
-                s.copy(
-                    fbFollowers = r.followers, fbVideoViews = r.views, fbVideoTitle = r.title, fbComments = r.comments,
-                    fbVideoId = r.videoId, fbReactions = r.reactions, fbShares = r.shares, fbPostedAt = r.postedAt,
-                )
+                if (r.reelLookupOk) {
+                    s.copy(
+                        fbFollowers = r.followers, fbVideoViews = r.views, fbVideoTitle = r.title, fbComments = r.comments,
+                        fbVideoId = r.videoId, fbReactions = r.reactions, fbShares = r.shares, fbPostedAt = r.postedAt,
+                    )
+                } else {
+                    // The reel lookup failed (network blip, Meta error): update followers but keep the
+                    // last known reel rather than blanking the card.
+                    s.copy(fbFollowers = r.followers)
+                }
             } catch (e: Exception) {
                 s.copy(fbError = e.message ?: "Facebook error")
             }
@@ -127,27 +133,54 @@ object Repo {
             .getJSONObject("relatedPlaylists").optString("uploads")
         if (uploads.isBlank()) return Yt(subs, -1, "", channelId = channelId)
 
+        // The uploads playlist is ordered by when a video was added, not when it went public, so a
+        // video scheduled earlier but uploaded later can sit above one that is newer. Look at the
+        // last 25 and choose by go-live time (see pickLatest).
         val pl = get(
             "https://www.googleapis.com/youtube/v3/playlistItems" +
-                "?part=contentDetails&playlistId=${enc(uploads)}&maxResults=1&key=$k"
+                "?part=contentDetails&playlistId=${enc(uploads)}&maxResults=25&key=$k"
         )
         val plItems = pl.optJSONArray("items")
         if (plItems == null || plItems.length() == 0) return Yt(subs, -1, "", channelId = channelId)
-        val videoId = plItems.getJSONObject(0).getJSONObject("contentDetails").getString("videoId")
+        val ids = (0 until plItems.length())
+            .map { plItems.getJSONObject(it).getJSONObject("contentDetails").optString("videoId") }
+            .filter { it.isNotBlank() }
+            .distinct()
+        if (ids.isEmpty()) return Yt(subs, -1, "", channelId = channelId)
 
         val vid = get(
             "https://www.googleapis.com/youtube/v3/videos" +
-                "?part=statistics,snippet&id=${enc(videoId)}&key=$k"
+                "?part=statistics,snippet,status&id=${enc(ids.joinToString(","))}&key=$k"
         )
         val vItems = vid.optJSONArray("items")
         if (vItems == null || vItems.length() == 0) return Yt(subs, -1, "", channelId = channelId)
-        val v = vItems.getJSONObject(0)
-        val views = v.getJSONObject("statistics").optString("viewCount", "-1").toLongOrNull() ?: -1L
+        val byId = HashMap<String, JSONObject>()
+        val cands = ArrayList<Candidate>()
+        for (i in 0 until vItems.length()) {
+            val o = vItems.getJSONObject(i)
+            val sn = o.optJSONObject("snippet") ?: continue
+            val st = o.optJSONObject("status")
+            val vidId = o.optString("id")
+            byId[vidId] = o
+            cands += Candidate(
+                id = vidId,
+                publishedAt = parseTime(sn.optString("publishedAt")),
+                live = ytLiveness(
+                    st?.optString("privacyStatus").orEmpty(),
+                    st?.optString("uploadStatus").orEmpty(),
+                    sn.optString("liveBroadcastContent"),
+                ),
+            )
+        }
+        val best = pickLatest(cands, System.currentTimeMillis())
+            ?: return Yt(subs, -1, "", channelId = channelId)
+        val videoId = best.id
+        val v = byId.getValue(videoId)
+        // Counts are absent (not zero) when the owner hides them, e.g. likes or comments turned off.
+        val vs = v.optJSONObject("statistics")
+        fun count(name: String) = vs?.optString(name, "-1")?.toLongOrNull() ?: -1L
         val title = v.getJSONObject("snippet").optString("title")
-        val comments = v.getJSONObject("statistics").optString("commentCount", "-1").toLongOrNull() ?: -1L
-        val likes = v.getJSONObject("statistics").optString("likeCount", "-1").toLongOrNull() ?: -1L
-        val postedAt = parseTime(v.getJSONObject("snippet").optString("publishedAt"))
-        return Yt(subs, views, title, comments, channelId, videoId, likes, postedAt)
+        return Yt(subs, count("viewCount"), title, count("commentCount"), channelId, videoId, count("likeCount"), best.publishedAt)
     }
 
     // ---------- Facebook ----------
@@ -161,6 +194,8 @@ object Repo {
         val reactions: Long = -1,
         val shares: Long = -1,
         val postedAt: Long = 0,
+        /** False when the reel lookup itself failed (network, Meta error), as opposed to "no live reel". */
+        val reelLookupOk: Boolean = true,
     )
 
     private fun fetchFacebook(pageId: String, token: String): Fb {
@@ -180,55 +215,61 @@ object Repo {
         var comments = -1L
         var postId = ""
         var postedAt = 0L
+        var lookupOk = true
         try {
             // Use the reels edge: the plain /videos edge also returns Stories ("day" shares),
             // which would replace the last reel's numbers. Fall back to /videos only if the
             // reels edge errors (e.g. missing permission), not when it is simply empty.
             //
-            // A page token also sees reels that are scheduled but not live yet. They come back
-            // first (newest upload), so pull a few and skip anything not published.
+            // The list is ordered by upload time, and a page token also returns reels that are
+            // scheduled but not live. So: read a few pages, keep the live ones, and take the one
+            // with the newest go-live time (see pickLatest).
             val base = "id,title,description,views,post_id,created_time"
             val extra = "$base,published,status,scheduled_publish_time"
-            fun load(fields: String): JSONObject = try {
-                get("https://graph.facebook.com/$FB_VERSION/$id/video_reels?fields=$fields&limit=10&access_token=$t")
+            fun firstPage(fields: String): JSONObject = try {
+                get("https://graph.facebook.com/$FB_VERSION/$id/video_reels?fields=$fields&limit=20&access_token=$t")
             } catch (_: Exception) {
-                get("https://graph.facebook.com/$FB_VERSION/$id/videos?fields=$fields&limit=10&access_token=$t")
+                get("https://graph.facebook.com/$FB_VERSION/$id/videos?fields=$fields&limit=20&access_token=$t")
             }
-            val vids = try {
-                load(extra)
+            var pageJson: JSONObject? = try {
+                firstPage(extra)
             } catch (_: Exception) {
-                load(base) // a status field the API rejects must not break the whole lookup
+                firstPage(base) // a status field the API rejects must not break the whole lookup
             }
-            val data = vids.optJSONArray("data")
-            var picked: JSONObject? = null
-            if (data != null) {
-                for (i in 0 until data.length()) {
-                    val cand = data.getJSONObject(i)
-                    if (isLiveFbVideo(cand, id, t)) {
-                        picked = cand
-                        break
+            val byId = HashMap<String, JSONObject>()
+            val cands = ArrayList<Candidate>()
+            val now = System.currentTimeMillis()
+            var pages = 0
+            while (pageJson != null && pages < 3) {
+                pages++
+                val data = pageJson.optJSONArray("data")
+                var liveOnPage = false
+                if (data != null) {
+                    for (i in 0 until data.length()) {
+                        val o = data.getJSONObject(i)
+                        val oid = o.optString("id")
+                        if (oid.isBlank()) continue
+                        val live = fbIsLive(o, id, t, now)
+                        byId[oid] = o
+                        cands += Candidate(oid, fbPublishTime(o), live)
+                        if (live) liveOnPage = true
                     }
                 }
+                // Scheduled reels can fill the top of the list. Keep paging until a page has a live one.
+                val next = pageJson.optJSONObject("paging")?.optString("next").orEmpty()
+                pageJson = if (!liveOnPage && next.isNotBlank()) get(next) else null
             }
-            if (picked != null) {
-                val v = picked
+            val best = pickLatest(cands, now)
+            if (best != null) {
+                val v = byId.getValue(best.id)
                 views = v.optLong("views", -1)
-                videoId = v.optString("id")
+                videoId = best.id
                 postId = v.optString("post_id")
-                // `created_time` is the upload time, hours earlier for a reel that was scheduled.
-                // The real go-live time is status.publishing_phase.publish_time.
-                val live = parseTime(
-                    v.optJSONObject("status")?.optJSONObject("publishing_phase")?.optString("publish_time").orEmpty()
-                )
-                val sched = v.optLong("scheduled_publish_time", 0) * 1000
-                postedAt = when {
-                    live > 0 -> live
-                    sched > 0 -> sched
-                    else -> parseTime(v.optString("created_time"))
-                }
+                postedAt = best.publishedAt
                 title = v.optString("title").ifBlank { v.optString("description").lineSequence().firstOrNull().orEmpty() }
             }
         } catch (_: Exception) {
+            lookupOk = false
         }
         // Comment count of that video, also best-effort.
         var reactions = -1L
@@ -258,22 +299,38 @@ object Repo {
                 }
             }
         }
-        return Fb(followers, views, title, comments, videoId, reactions, shares, postedAt)
+        return Fb(followers, views, title, comments, videoId, reactions, shares, postedAt, lookupOk)
     }
 
     /**
-     * False for a reel/video that is scheduled or otherwise not public yet. [pageEnc] and [tokenEnc]
-     * are already URL-encoded. Checks the status fields when Meta returned them, otherwise asks the
-     * reel's post for `is_published`. Unknown means live, so a missing permission never hides a reel.
+     * When a reel went live, epoch millis. `created_time` is the upload time, hours earlier for a
+     * scheduled reel, so prefer status.publishing_phase.publish_time, then the schedule time.
      */
-    private fun isLiveFbVideo(v: JSONObject, pageEnc: String, tokenEnc: String): Boolean {
-        if (v.has("published") && !v.optBoolean("published", true)) return false
-        val scheduledAt = v.optLong("scheduled_publish_time", 0)
-        if (scheduledAt > System.currentTimeMillis() / 1000) return false
-        val state = v.optJSONObject("status")?.optString("video_status").orEmpty()
-        if (state.isNotEmpty()) return state.equals("ready", ignoreCase = true) ||
-            state.equals("published", ignoreCase = true)
-        // No status data: fall back to the post.
+    private fun fbPublishTime(v: JSONObject): Long {
+        val live = parseTime(
+            v.optJSONObject("status")?.optJSONObject("publishing_phase")?.optString("publish_time").orEmpty()
+        )
+        if (live > 0) return live
+        val sched = v.optLong("scheduled_publish_time", 0) * 1000
+        if (sched > 0) return sched
+        return parseTime(v.optString("created_time"))
+    }
+
+    /**
+     * Is this reel public? Uses the status fields Meta returned (see [fbLiveness]); with none, asks
+     * the reel's post for `is_published`. If even that cannot be read, assume live so a missing
+     * permission never hides a reel. [pageEnc] and [tokenEnc] are already URL-encoded.
+     */
+    private fun fbIsLive(v: JSONObject, pageEnc: String, tokenEnc: String, now: Long): Boolean {
+        val phase = v.optJSONObject("status")?.optJSONObject("publishing_phase")
+        val known = fbLiveness(
+            published = if (v.has("published")) v.optBoolean("published") else null,
+            publishStatus = phase?.optString("publish_status").orEmpty(),
+            videoStatus = v.optJSONObject("status")?.optString("video_status").orEmpty(),
+            scheduledAtMs = v.optLong("scheduled_publish_time", 0) * 1000,
+            now = now,
+        )
+        if (known != null) return known
         val postId = v.optString("post_id")
         if (postId.isBlank()) return true
         return try {

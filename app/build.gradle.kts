@@ -43,4 +43,6 @@ dependencies {
   implementation(libs.androidx.biometric)
   // Biometric pulls in an old fragment that cannot run Compose's permission launcher (requestCode crash).
   implementation("androidx.fragment:fragment:1.8.6")
+
+  testImplementation("junit:junit:4.13.2")
 }
