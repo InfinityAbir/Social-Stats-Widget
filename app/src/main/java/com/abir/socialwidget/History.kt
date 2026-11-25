@@ -18,9 +18,9 @@ data class Growth(val yt: Long? = null, val fb: Long? = null)
  */
 object History {
     private const val KEY = "history"
-    private const val KEEP_DAYS = 14
+    private const val KEEP_DAYS = 30
 
-    private class Day(
+    internal class Day(
         val day: String,
         var ytOpen: Long, var ytClose: Long,
         var fbOpen: Long, var fbClose: Long,
@@ -75,6 +75,16 @@ object History {
         save(c, days)
     }
 
+    /** Subscriber / follower counts at the end of each of the last [n] recorded days, oldest first. -1 = unknown. */
+    @Synchronized
+    fun series(c: Context, n: Int = 7): List<Pair<Long, Long>> =
+        load(c).takeLast(n).map { it.ytClose to it.fbClose }
+
+    /** Change over up to [days] days; see [spanChange]. */
+    @Synchronized
+    fun span(c: Context, s: Stats, days: Int = 7, now: Long = System.currentTimeMillis()): Span =
+        spanChange(load(c), fmt().format(Date(now)), s.ytSubs, s.fbFollowers, days)
+
     @Synchronized
     fun growth(c: Context, s: Stats, now: Long = System.currentTimeMillis()): Growth {
         val days = load(c)
@@ -95,4 +105,34 @@ object History {
             fb = delta(s.fbFollowers, prev?.fbClose, cur?.fbOpen),
         )
     }
+}
+
+/** Change over a stretch of days. [days] is how far back the starting point really was (0 = no data yet). */
+data class Span(val yt: Long?, val fb: Long?, val days: Int)
+
+private const val DAY_MS_H = 24 * 3_600_000L
+
+/**
+ * Change since the start of the oldest recorded day that is at most [days] days back, so a fresh
+ * install with three days of history reports three days instead of nothing.
+ */
+internal fun spanChange(history: List<History.Day>, today: String, ytNow: Long, fbNow: Long, days: Int): Span {
+    val f = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+    val todayMs = runCatching { f.parse(today)?.time }.getOrNull() ?: return Span(null, null, 0)
+    var base: History.Day? = null
+    var baseAge = 0
+    for (d in history) {
+        val ms = runCatching { f.parse(d.day)?.time }.getOrNull() ?: continue
+        val age = Math.round((todayMs - ms).toDouble() / DAY_MS_H).toInt()
+        if (age in 1..days && age > baseAge) {
+            base = d
+            baseAge = age
+        }
+    }
+    if (base == null) return Span(null, null, 0)
+    fun delta(now: Long, open: Long, close: Long): Long? {
+        val start = if (open >= 0) open else close
+        return if (now < 0 || start < 0) null else now - start
+    }
+    return Span(delta(ytNow, base.ytOpen, base.ytClose), delta(fbNow, base.fbOpen, base.fbClose), baseAge)
 }

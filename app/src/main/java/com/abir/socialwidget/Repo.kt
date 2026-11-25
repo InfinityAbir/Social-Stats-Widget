@@ -18,37 +18,56 @@ object Repo {
     suspend fun refreshAll(context: Context): Stats = withContext(NonCancellable) { refreshAllNow(context) }
 
     // NonCancellable: leaving the app mid-refresh must not drop the save and the widget redraw.
-    private suspend fun refreshAllNow(context: Context): Stats {
+    private suspend fun refreshAllNow(context: Context): Stats =
+        try {
+            refreshAllInner(context)
+        } finally {
+            // Whatever happened, the widget's "Refreshing…" ends here.
+            Store.setRefreshingAt(context.applicationContext, 0)
+        }
+
+    private suspend fun refreshAllInner(context: Context): Stats {
         val app = context.applicationContext
         val settings = Store.loadSettings(app)
         val old = Store.loadStats(app)
 
+        val now = System.currentTimeMillis()
         var s = old.copy(ytError = "", fbError = "")
 
         if (settings.ytConfigured) {
             s = try {
                 val r = withContext(Dispatchers.IO) { fetchYoutube(settings.ytKey, settings.ytChannel) }
+                Store.savePosts(app, "yt", r.posts)
+                val step = velocityStep(Store.loadSample(app, "yt"), old.ytRate, r.videoId, r.views, now)
+                Store.saveSample(app, "yt", step.sample)
                 s.copy(
                     ytSubs = r.subs, ytVideoViews = r.views, ytVideoTitle = r.title, ytComments = r.comments,
                     ytChannelId = r.channelId, ytVideoId = r.videoId, ytLikes = r.likes, ytPostedAt = r.postedAt,
+                    ytRate = step.rate,
                 )
             } catch (e: Exception) {
-                s.copy(ytError = e.message ?: "YouTube error")
+                s.copy(ytError = friendlyError(e, "YouTube error"))
             }
         } else {
             s = s.copy(
                 ytSubs = -1, ytVideoViews = -1, ytVideoTitle = "", ytComments = -1,
-                ytChannelId = "", ytVideoId = "", ytLikes = -1, ytPostedAt = 0,
+                ytChannelId = "", ytVideoId = "", ytLikes = -1, ytPostedAt = 0, ytRate = -1,
             )
+            Store.savePosts(app, "yt", emptyList())
+            Store.saveSample(app, "yt", null)
         }
 
         if (settings.fbConfigured) {
             s = try {
                 val r = withContext(Dispatchers.IO) { fetchFacebook(settings.fbPageId, settings.fbToken) }
                 if (r.reelLookupOk) {
+                    Store.savePosts(app, "fb", r.posts)
+                    val step = velocityStep(Store.loadSample(app, "fb"), old.fbRate, r.videoId, r.views, now)
+                    Store.saveSample(app, "fb", step.sample)
                     s.copy(
                         fbFollowers = r.followers, fbVideoViews = r.views, fbVideoTitle = r.title, fbComments = r.comments,
                         fbVideoId = r.videoId, fbReactions = r.reactions, fbShares = r.shares, fbPostedAt = r.postedAt,
+                        fbRate = step.rate,
                     )
                 } else {
                     // The reel lookup failed (network blip, Meta error): update followers but keep the
@@ -56,19 +75,22 @@ object Repo {
                     s.copy(fbFollowers = r.followers)
                 }
             } catch (e: Exception) {
-                s.copy(fbError = e.message ?: "Facebook error")
+                s.copy(fbError = friendlyError(e, "Facebook error"))
             }
         } else {
             s = s.copy(
                 fbFollowers = -1, fbVideoViews = -1, fbVideoTitle = "", fbComments = -1,
-                fbVideoId = "", fbReactions = -1, fbShares = -1, fbPostedAt = 0,
+                fbVideoId = "", fbReactions = -1, fbShares = -1, fbPostedAt = 0, fbRate = -1,
             )
+            Store.savePosts(app, "fb", emptyList())
+            Store.saveSample(app, "fb", null)
         }
 
-        s = s.copy(updatedAt = System.currentTimeMillis())
+        s = s.copy(updatedAt = now)
         Store.saveStats(app, s)
         History.record(app, s)
         runCatching { Notifier.check(app, s, Store.loadDisplay(app)) }
+        runCatching { Reminders.schedule(app) } // safety net: keeps the posting reminder armed
         redrawWidgets(app)
         return s
     }
@@ -91,6 +113,8 @@ object Repo {
         val videoId: String = "",
         val likes: Long = -1,
         val postedAt: Long = 0,
+        /** Recent live videos, for the averages and best-post insights. */
+        val posts: List<Post> = emptyList(),
     )
 
     /** Parses Meta/YouTube ISO timestamps ("...Z" or "...+0000") to epoch millis; 0 if unparseable. */
@@ -180,7 +204,16 @@ object Repo {
         val vs = v.optJSONObject("statistics")
         fun count(name: String) = vs?.optString(name, "-1")?.toLongOrNull() ?: -1L
         val title = v.getJSONObject("snippet").optString("title")
-        return Yt(subs, count("viewCount"), title, count("commentCount"), channelId, videoId, count("likeCount"), best.publishedAt)
+        val posts = cands.filter { it.live }.map {
+            val o = byId.getValue(it.id)
+            Post(
+                it.id,
+                o.getJSONObject("snippet").optString("title"),
+                o.optJSONObject("statistics")?.optString("viewCount", "-1")?.toLongOrNull() ?: -1L,
+                it.publishedAt,
+            )
+        }
+        return Yt(subs, count("viewCount"), title, count("commentCount"), channelId, videoId, count("likeCount"), best.publishedAt, posts)
     }
 
     // ---------- Facebook ----------
@@ -196,6 +229,7 @@ object Repo {
         val postedAt: Long = 0,
         /** False when the reel lookup itself failed (network, Meta error), as opposed to "no live reel". */
         val reelLookupOk: Boolean = true,
+        val posts: List<Post> = emptyList(),
     )
 
     private fun fetchFacebook(pageId: String, token: String): Fb {
@@ -216,6 +250,7 @@ object Repo {
         var postId = ""
         var postedAt = 0L
         var lookupOk = true
+        val posts = ArrayList<Post>()
         try {
             // Use the reels edge: the plain /videos edge also returns Stories ("day" shares),
             // which would replace the last reel's numbers. Fall back to /videos only if the
@@ -251,7 +286,16 @@ object Repo {
                         if (oid.isBlank()) continue
                         val live = fbIsLive(o, id, t, now)
                         byId[oid] = o
-                        cands += Candidate(oid, fbPublishTime(o), live)
+                        val at = fbPublishTime(o)
+                        cands += Candidate(oid, at, live)
+                        if (live) {
+                            posts += Post(
+                                oid,
+                                o.optString("title").ifBlank { o.optString("description").lineSequence().firstOrNull().orEmpty() },
+                                o.optLong("views", -1),
+                                at,
+                            )
+                        }
                         if (live) liveOnPage = true
                     }
                 }
@@ -299,7 +343,7 @@ object Repo {
                 }
             }
         }
-        return Fb(followers, views, title, comments, videoId, reactions, shares, postedAt, lookupOk)
+        return Fb(followers, views, title, comments, videoId, reactions, shares, postedAt, lookupOk, posts)
     }
 
     /**

@@ -3,6 +3,7 @@ package com.abir.socialwidget
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Color as AndroidColor
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -15,13 +16,22 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -31,7 +41,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -54,6 +67,8 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,6 +78,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
@@ -76,57 +93,50 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-// ---- Palette (matches the widget) ----
-private val Bg = Color(0xFF0D0E15)
-private val Panel1 = Color(0xFF161926)
-private val Panel2 = Color(0xFF1F2333)
-private val Line = Color(0xFF2C3147)
-private val Accent = Color(0xFF8C9EFF)
-private val YtRed = Color(0xFFFF5A4D)
-private val FbBlue = Color(0xFF5AA2FF)
-private val TextHi = Color(0xFFF2F3F8)
-private val TextLo = Color(0xFFA9AEC2)
-private val Good = Color(0xFF59D68C)
-private val Warn = Color(0xFFFFB454)
-
-private val AppColors = darkColorScheme(
-    primary = Accent,
-    onPrimary = Color(0xFF10132A),
-    background = Bg,
-    surface = Bg,
-    onSurface = TextHi,
-    onBackground = TextHi,
-    surfaceVariant = Panel2,
-    onSurfaceVariant = TextLo,
-    outline = Line,
-    error = Color(0xFFFF8A80),
-)
-
 class MainActivity : FragmentActivity() {
     // The settings screen is only shown after the user passes the device lock (fingerprint, face or PIN).
     private var unlocked by mutableStateOf(false)
+    private var themeMode by mutableStateOf(ThemeMode.SYSTEM)
     private var lastStopAt = 0L
     private var prompting = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        unlocked = savedInstanceState?.getBoolean(STATE_UNLOCKED) ?: false
+        unlocked = !needsLock() || (savedInstanceState?.getBoolean(STATE_UNLOCKED) ?: false)
         lastStopAt = savedInstanceState?.getLong(STATE_STOPPED_AT) ?: 0L
-        // The app is dark in every system theme, so keep the system bar icons light.
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
-        )
+        themeMode = Store.themeMode(applicationContext)
         Scheduler.schedule(applicationContext)
         setContent {
-            MaterialTheme(colorScheme = AppColors) {
-                Surface(modifier = Modifier.fillMaxSize(), color = Bg) {
-                    if (unlocked) SettingsScreen() else LockScreen(onUnlock = { authenticate() })
+            val dark = isDarkFor(themeMode, isSystemInDarkTheme())
+            val palette = if (dark) DarkPalette else LightPalette
+            // System bar icons and the window behind the app follow the theme (no white flash in dark).
+            LaunchedEffect(dark) {
+                val bars = if (dark) SystemBarStyle.dark(AndroidColor.TRANSPARENT)
+                else SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT)
+                enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
+                window.setBackgroundDrawable(ColorDrawable(palette.bg.toArgb()))
+            }
+            CompositionLocalProvider(LocalPalette provides palette) {
+                MaterialTheme(colorScheme = appColorScheme(palette)) {
+                    Surface(modifier = Modifier.fillMaxSize(), color = palette.bg) {
+                        if (unlocked) {
+                            SettingsScreen(
+                                themeMode = themeMode,
+                                onThemeChange = {
+                                    themeMode = it
+                                    Store.setThemeMode(applicationContext, it)
+                                },
+                            )
+                        } else {
+                            LockScreen(onUnlock = { authenticate() })
+                        }
+                    }
                 }
             }
         }
@@ -134,6 +144,11 @@ class MainActivity : FragmentActivity() {
 
     override fun onStart() {
         super.onStart()
+        // Read every time: the user can switch the lock off (or on) in the app's Security section.
+        if (!needsLock()) {
+            unlocked = true
+            return
+        }
         val away = SystemClock.elapsedRealtime() - lastStopAt
         if (lastStopAt == 0L || away > RELOCK_AFTER_MS) unlocked = false
         if (!unlocked) authenticate()
@@ -148,6 +163,14 @@ class MainActivity : FragmentActivity() {
         super.onSaveInstanceState(outState)
         outState.putBoolean(STATE_UNLOCKED, unlocked)
         outState.putLong(STATE_STOPPED_AT, lastStopAt)
+    }
+
+    /** Locked only when the user wants it AND there are saved keys to protect (nothing to guard on first run). */
+    private fun needsLock(): Boolean {
+        val c = applicationContext
+        if (!Store.lockEnabled(c)) return false
+        val saved = Store.loadConfigured(c)
+        return saved.yt || saved.fb
     }
 
     private fun authenticate() {
@@ -216,7 +239,7 @@ private fun LockScreen(onUnlock: () -> Unit) {
         Button(
             onClick = onUnlock,
             shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color(0xFF10132A)),
+            colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = OnAccent),
             modifier = Modifier.height(52.dp),
         ) { Text("Unlock", fontWeight = FontWeight.SemiBold, fontSize = 16.sp) }
     }
@@ -224,7 +247,7 @@ private fun LockScreen(onUnlock: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsScreen() {
+private fun SettingsScreen(themeMode: ThemeMode, onThemeChange: (ThemeMode) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val initial = remember { Store.loadSettings(context) }
@@ -241,9 +264,33 @@ private fun SettingsScreen() {
     var stats by remember { mutableStateOf(Store.loadStats(context)) }
     var display by remember { mutableStateOf(Store.loadDisplay(context)) }
     var busy by remember { mutableStateOf(false) }
+    var lockOn by remember { mutableStateOf(Store.lockEnabled(context)) }
+    val scrollState = rememberScrollState()
+    val connectionsBring = remember { BringIntoViewRequester() }
+    val helpBring = remember { BringIntoViewRequester() }
+    // Settings fold away once you are set up; with no keys yet, the connections start open (and first).
+    var displayOpen by remember { mutableStateOf(false) }
+    var alertsOpen by remember { mutableStateOf(false) }
+    var securityOpen by remember { mutableStateOf(false) }
+    var appearanceOpen by remember { mutableStateOf(false) }
+    var savedNote by remember { mutableStateOf(false) }
+    // The "Saved" note fades after a few seconds.
+    LaunchedEffect(savedNote) {
+        if (savedNote) {
+            delay(3_000)
+            savedNote = false
+        }
+    }
+    var connectionsOpen by remember { mutableStateOf(!initial.ytConfigured && !initial.fbConfigured) }
+    val setupFirst = remember { !initial.ytConfigured && !initial.fbConfigured }
 
     // Today's change in subscribers / followers; recomputed whenever the numbers change.
     val growth = remember(stats) { History.growth(context, stats) }
+    // Creator insights read what earlier refreshes saved; recomputed whenever the numbers change.
+    val ytPosts = remember(stats) { Store.loadPosts(context, "yt") }
+    val fbPosts = remember(stats) { Store.loadPosts(context, "fb") }
+    val span = remember(stats) { History.span(context, stats) }
+    val series = remember(stats) { History.series(context) }
 
     // Android 13+ asks before an app may post notifications. Alerts are switched on only if it is granted.
     var pendingAlert by remember { mutableStateOf<((Display) -> Display)?>(null) }
@@ -253,6 +300,7 @@ private fun SettingsScreen() {
         if (granted && apply != null) {
             display = apply(display).also { Store.saveDisplay(context, it) }
             Scheduler.schedule(context)
+            Reminders.schedule(context)
         }
     }
     // Save a change to the display or alert choices, redraw the widgets, and keep the background refresh in step.
@@ -260,6 +308,7 @@ private fun SettingsScreen() {
         display = next
         Store.saveDisplay(context, next)
         if (next.anyAlerts) Scheduler.schedule(context) else Scheduler.cancelIfUnused(context)
+        Reminders.schedule(context)
         scope.launch { Repo.redrawWidgets(context) }
     }
     val setAlert: ((Display) -> Display) -> Unit = { change ->
@@ -282,7 +331,11 @@ private fun SettingsScreen() {
 
     val ytReady = (ytSaved || ytKey.isNotBlank()) && ytChannel.isNotBlank()
     val fbReady = fbPageId.isNotBlank() && (fbSaved || fbToken.isNotBlank())
-    val hasError = stats.ytError.isNotBlank() || stats.fbError.isNotBlank()
+    // No internet is temporary and not the user's doing: it gets a calm note, not a red "needs attention".
+    val ytProblem = stats.ytError.isNotBlank() && !isOfflineError(stats.ytError)
+    val fbProblem = stats.fbError.isNotBlank() && !isOfflineError(stats.fbError)
+    val hasError = ytProblem || fbProblem
+    val offline = isOfflineError(stats.ytError) || isOfflineError(stats.fbError)
 
     val uriHandler = LocalUriHandler.current
     val openUrl: (String) -> Unit = { url -> runCatching { uriHandler.openUri(url) } }
@@ -312,6 +365,126 @@ private fun SettingsScreen() {
         }
     }
 
+    val openConnections: () -> Unit = {
+        connectionsOpen = true
+        scope.launch { delay(150); connectionsBring.bringIntoView() }
+    }
+    val openGuide: (() -> Unit) -> Unit = { select ->
+        select()
+        helpOpen = true
+        scope.launch { delay(150); helpBring.bringIntoView() }
+    }
+
+    val connectionsGroup: @Composable () -> Unit = {
+        SettingsGroup(
+            title = "CONNECTIONS",
+            summary = if (ytReady || fbReady) "Saved" else "Setup needed",
+            subtitle = "Your YouTube and Facebook keys",
+            expanded = connectionsOpen,
+            onToggle = { connectionsOpen = !connectionsOpen },
+            requester = connectionsBring,
+        ) {
+
+        Card2 {
+            CardHeader(R.drawable.ic_youtube, "YouTube", "Data API v3")
+            Spacer(Modifier.height(14.dp))
+            SecretField(
+                saved = ytSaved,
+                replacing = ytReplacing,
+                onReplacingChange = { ytReplacing = it },
+                value = ytKey, onValueChange = { ytKey = it },
+                label = "API key",
+            )
+            Spacer(Modifier.height(10.dp))
+            AppField(
+                value = ytChannel, onValueChange = { ytChannel = it },
+                label = "Channel @handle or ID",
+            )
+            HowToLink("How do I get an API key and my handle?") { openGuide { ytGuideOpen = true } }
+        }
+
+        Card2 {
+            CardHeader(R.drawable.ic_facebook, "Facebook Page", "Graph API")
+            Spacer(Modifier.height(14.dp))
+            AppField(
+                value = fbPageId, onValueChange = { fbPageId = it },
+                label = "Page ID",
+                keyboardType = KeyboardType.Number,
+            )
+            Spacer(Modifier.height(10.dp))
+            SecretField(
+                saved = fbSaved,
+                replacing = fbReplacing,
+                onReplacingChange = { fbReplacing = it },
+                value = fbToken, onValueChange = { fbToken = it },
+                label = "Page access token",
+            )
+            HowToLink("How do I get a Page ID and token?") { openGuide { fbGuideOpen = true } }
+        }
+
+        Button(
+            enabled = !busy,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(54.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = OnAccent),
+            onClick = {
+                busy = true
+                // A blank secret field means "keep the saved one".
+                val current = Store.loadSettings(context)
+                saveFailed = !Store.saveSettings(
+                    context,
+                    Settings(ytKey.ifBlank { current.ytKey }, ytChannel, fbPageId, fbToken.ifBlank { current.fbToken }),
+                )
+                val saved = Store.loadSettings(context)
+                ytSaved = saved.ytKey.isNotBlank()
+                fbSaved = saved.fbToken.isNotBlank()
+                ytKey = ""
+                fbToken = ""
+                ytReplacing = false
+                fbReplacing = false
+                Scheduler.schedule(context)
+                scope.launch {
+                    stats = Repo.refreshAll(context)
+                    busy = false
+                    savedNote = true
+                }
+            },
+        ) {
+            if (busy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = OnAccent,
+                )
+                Spacer(Modifier.width(10.dp))
+                Text("Refreshing…", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            } else {
+                Text("Save & refresh", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            }
+        }
+
+        if (savedNote && !saveFailed) {
+            Text(
+                "✓ Saved and refreshed",
+                color = Good,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(start = 4.dp),
+            )
+        }
+
+        if (saveFailed) {
+            Text(
+                "Your phone could not encrypt the key, so it was not saved. Please try again.",
+                color = Warn,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(start = 4.dp),
+            )
+        }
+        }
+    }
     PullToRefreshBox(
         isRefreshing = busy,
         onRefresh = refresh,
@@ -321,8 +494,11 @@ private fun SettingsScreen() {
     ) {
     Column(
         modifier = Modifier
+            // On a tablet or a folded-open phone the content stays a comfortable width, centred.
+            .align(Alignment.TopCenter)
+            .widthIn(max = 640.dp)
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(horizontal = 18.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
@@ -331,7 +507,7 @@ private fun SettingsScreen() {
             modifier = Modifier
                 .fillMaxWidth()
                 .background(
-                    Brush.linearGradient(listOf(Color(0xFF262B52), Color(0xFF121422))),
+                    Brush.linearGradient(LocalPalette.current.heroGradient),
                     RoundedCornerShape(24.dp),
                 )
                 .border(1.dp, Line, RoundedCornerShape(24.dp))
@@ -351,11 +527,13 @@ private fun SettingsScreen() {
                 StatusChip(
                     text = when {
                         hasError -> "Attention"
+                        offline -> "Offline"
                         ytReady && fbReady -> "Connected"
                         else -> "Setup needed"
                     },
                     color = when {
                         hasError -> Warn
+                        offline -> TextLo
                         ytReady && fbReady -> Good
                         else -> TextLo
                     },
@@ -364,7 +542,7 @@ private fun SettingsScreen() {
         }
 
         // ---- Error banners ----
-        if (stats.ytError.isNotBlank()) {
+        if (ytProblem) {
             ErrorCard(
                 title = "YouTube needs attention",
                 message = stats.ytError,
@@ -373,7 +551,7 @@ private fun SettingsScreen() {
                 onAction = { ytGuideOpen = true; helpOpen = true },
             )
         }
-        if (stats.fbError.isNotBlank()) {
+        if (fbProblem) {
             ErrorCard(
                 title = "Facebook needs attention",
                 message = stats.fbError,
@@ -383,14 +561,34 @@ private fun SettingsScreen() {
             )
         }
 
+        if (offline) {
+            InfoNote("No internet connection right now. Your numbers will update by themselves when you are back online.")
+        }
+
+        if (setupFirst) {
+            Card2 {
+                Text("Welcome", color = TextHi, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Connect YouTube, Facebook or both to see your numbers here and on your home screen. " +
+                        "Use only the one you have: the other card can stay empty.",
+                    color = TextLo,
+                    fontSize = 13.sp,
+                )
+            }
+        }
+
         // ---- Live stats ----
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+            modifier = Modifier.height(IntrinsicSize.Max),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             StatTile(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).fillMaxHeight(),
                 name = "YouTube",
                 iconRes = R.drawable.ic_youtube,
                 accent = YtRed,
-                gradient = listOf(Color(0xFF3A1B21), Color(0xFF171822)),
+                gradient = LocalPalette.current.ytGradient,
                 configured = ytReady,
                 big = stats.ytSubs,
                 bigLabel = "subscribers",
@@ -399,14 +597,25 @@ private fun SettingsScreen() {
                 metrics = ytMetrics(stats, display),
                 title = if (display.ytTitle) stats.ytVideoTitle else "",
                 posted = if (display.ytPosted) postedAgo(stats.ytPostedAt) else "",
+                insight = insightParts(
+                    stats.ytVideoViews, ytPosts, stats.ytVideoId, stats.ytPostedAt, stats.ytRate,
+                    display.ytVsAvg, display.ytSpeed,
+                ),
                 onClick = { if (ytReady) openInApp(youtubeDashboardUrl(stats.ytChannelId), YOUTUBE_STUDIO_PACKAGE) },
+                openLabel = "Studio ›",
+                onOpenPost = {
+                    // The latest video itself; the corner label goes to the Studio dashboard.
+                    if (!ytReady) openConnections()
+                    else if (stats.ytVideoId.isNotBlank()) openUrl("https://www.youtube.com/watch?v=${stats.ytVideoId}")
+                    else openInApp(youtubeDashboardUrl(stats.ytChannelId), YOUTUBE_STUDIO_PACKAGE)
+                },
             )
             StatTile(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).fillMaxHeight(),
                 name = "Facebook",
                 iconRes = R.drawable.ic_facebook,
                 accent = FbBlue,
-                gradient = listOf(Color(0xFF17315A), Color(0xFF171822)),
+                gradient = LocalPalette.current.fbGradient,
                 configured = fbReady,
                 big = stats.fbFollowers,
                 bigLabel = "followers",
@@ -415,19 +624,41 @@ private fun SettingsScreen() {
                 metrics = fbMetrics(stats, display),
                 title = if (display.fbTitle) stats.fbVideoTitle else "",
                 posted = if (display.fbPosted) postedAgo(stats.fbPostedAt) else "",
+                insight = insightParts(
+                    stats.fbVideoViews, fbPosts, stats.fbVideoId, stats.fbPostedAt, stats.fbRate,
+                    display.fbVsAvg, display.fbSpeed,
+                ),
                 onClick = { if (fbPageId.isNotBlank()) openUrl("https://www.facebook.com/${fbPageId.trim()}") },
+                openLabel = "Page ›",
+                onOpenPost = {
+                    if (!fbReady) openConnections()
+                    else if (stats.fbVideoId.isNotBlank()) openUrl("https://www.facebook.com/reel/${stats.fbVideoId}")
+                    else openUrl("https://www.facebook.com/${fbPageId.trim()}")
+                },
             )
         }
-        Text(
-            text = if (stats.updatedAt == 0L) "Not refreshed yet"
-            else "Updated " + SimpleDateFormat("d MMM, h:mm a", Locale.getDefault()).format(Date(stats.updatedAt)),
-            color = TextLo,
-            fontSize = 12.sp,
-            modifier = Modifier.padding(start = 4.dp),
-        )
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 4.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = if (stats.updatedAt == 0L) "Not refreshed yet"
+                    else "Updated " + SimpleDateFormat("d MMM, h:mm a", Locale.getDefault()).format(Date(stats.updatedAt)),
+                    color = TextLo,
+                    fontSize = 12.sp,
+                )
+                if (ytReady || fbReady) {
+                    Text("Tap a card to open its latest post", color = TextLo.copy(alpha = 0.8f), fontSize = 11.sp)
+                }
+            }
+            RefreshButton(busy = busy, onClick = refresh)
+        }
+
+        if (setupFirst) connectionsGroup()
+
+        // ---- Creator insights ----
+        InsightsSection(stats, ytPosts, fbPosts, span, series, ytReady, fbReady)
 
         // ---- Display ----
-        SectionLabel("DISPLAY")
+        SettingsGroup("DISPLAY", "", displayOpen, { displayOpen = !displayOpen }, subtitle = "Choose what the cards and widget show") {
 
         Card2 {
             Text("Choose what the widgets and tiles show.", color = TextLo, fontSize = 12.sp)
@@ -443,6 +674,8 @@ private fun SettingsScreen() {
                     "Title" to display.ytTitle,
                     "Posted" to display.ytPosted,
                     "Growth" to display.ytGrowth,
+                    "vs usual" to display.ytVsAvg,
+                    "Speed" to display.ytSpeed,
                 ),
                 onToggle = {
                     updateDisplay(
@@ -452,7 +685,9 @@ private fun SettingsScreen() {
                             2 -> display.copy(ytLikes = !display.ytLikes)
                             3 -> display.copy(ytTitle = !display.ytTitle)
                             4 -> display.copy(ytPosted = !display.ytPosted)
-                            else -> display.copy(ytGrowth = !display.ytGrowth)
+                            5 -> display.copy(ytGrowth = !display.ytGrowth)
+                            6 -> display.copy(ytVsAvg = !display.ytVsAvg)
+                            else -> display.copy(ytSpeed = !display.ytSpeed)
                         },
                     )
                 },
@@ -470,6 +705,8 @@ private fun SettingsScreen() {
                     "Title" to display.fbTitle,
                     "Posted" to display.fbPosted,
                     "Growth" to display.fbGrowth,
+                    "vs usual" to display.fbVsAvg,
+                    "Speed" to display.fbSpeed,
                 ),
                 onToggle = {
                     updateDisplay(
@@ -480,21 +717,40 @@ private fun SettingsScreen() {
                             3 -> display.copy(fbShares = !display.fbShares)
                             4 -> display.copy(fbTitle = !display.fbTitle)
                             5 -> display.copy(fbPosted = !display.fbPosted)
-                            else -> display.copy(fbGrowth = !display.fbGrowth)
+                            6 -> display.copy(fbGrowth = !display.fbGrowth)
+                            7 -> display.copy(fbVsAvg = !display.fbVsAvg)
+                            else -> display.copy(fbSpeed = !display.fbSpeed)
                         },
                     )
                 },
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                "Growth shows today's change in subscribers and followers. Widgets fit two stats per row, so pick the ones you need most.",
+                "Growth shows today's change. \"vs usual\" compares the latest post with what your last ten posts usually get, and \"Speed\" is views gained per hour right now. Widgets fit two stats per row, so pick the ones you need most.",
                 color = TextLo,
                 fontSize = 11.sp,
             )
         }
+        }
+
+        // ---- Appearance ----
+        SettingsGroup(
+            "APPEARANCE", themeMode.label, appearanceOpen, { appearanceOpen = !appearanceOpen },
+            subtitle = "Light, dark, or match your phone",
+        ) {
+            Card2 {
+                ChipGrid(
+                    accent = Accent,
+                    chips = ThemeMode.entries.map { it.label to (themeMode == it) },
+                    onToggle = { onThemeChange(ThemeMode.entries[it]) },
+                )
+                Spacer(Modifier.height(10.dp))
+                Text("The home-screen widget keeps its dark look.", color = TextLo, fontSize = 11.sp)
+            }
+        }
 
         // ---- Alerts ----
-        SectionLabel("ALERTS")
+        SettingsGroup("ALERTS", listOf(display.notifyMilestones, display.notifyFastRise, display.notifyComments, display.notifyStale, display.notifyReminder).count { it }.let { if (it == 0) "All off" else "$it on" }, alertsOpen, { alertsOpen = !alertsOpen }, subtitle = "Notifications for milestones, comments and more") {
 
         Card2 {
             SwitchRow(
@@ -520,104 +776,64 @@ private fun SettingsScreen() {
                     onToggle = { updateDisplay(display.copy(riseThreshold = RISE_THRESHOLDS[it])) },
                 )
             }
+            Spacer(Modifier.height(14.dp))
+            SwitchRow(
+                title = "New comments",
+                subtitle = "Alert when your latest video or reel gets a new comment.",
+                checked = display.notifyComments,
+                onChange = { on -> setAlert { it.copy(notifyComments = on) } },
+            )
+            Spacer(Modifier.height(14.dp))
+            SwitchRow(
+                title = "Connection problems",
+                subtitle = "Alert when YouTube or Facebook has been failing for 3 hours, such as an expired Page token.",
+                checked = display.notifyStale,
+                onChange = { on -> setAlert { it.copy(notifyStale = on) } },
+            )
+            Spacer(Modifier.height(14.dp))
+            SwitchRow(
+                title = "Posting reminder",
+                subtitle = "Get a nudge shortly before your usual posting time.",
+                checked = display.notifyReminder,
+                onChange = { on -> setAlert { it.copy(notifyReminder = on) } },
+            )
+            if (display.notifyReminder) {
+                ReminderSettings(display, onChange = { updateDisplay(it) })
+            }
             Spacer(Modifier.height(10.dp))
             Text(
-                "Checked on every refresh, about every 15 minutes while the phone is online.",
+                "Most alerts are checked on every refresh, about every 15 minutes while the phone is online. Posting reminders run on their own timer.",
                 color = TextLo,
                 fontSize = 11.sp,
             )
         }
+        }
+
+        // ---- Security ----
+        SettingsGroup("SECURITY", if (lockOn) "Lock on" else "Lock off", securityOpen, { securityOpen = !securityOpen }, subtitle = "Lock the app with your fingerprint or screen lock") {
+
+        Card2 {
+            SwitchRow(
+                title = "App lock",
+                subtitle = if (lockOn) "Ask for your fingerprint, face or screen lock each time the app opens."
+                else "Off: anyone who opens this app can use it. Your saved keys stay hidden either way.",
+                checked = lockOn,
+                onChange = { on ->
+                    lockOn = on
+                    Store.setLockEnabled(context, on)
+                },
+            )
+        }
+        }
 
         // ---- Connections ----
-        SectionLabel("CONNECTIONS")
-
-        Card2 {
-            CardHeader(R.drawable.ic_youtube, "YouTube", "Data API v3")
-            Spacer(Modifier.height(14.dp))
-            SecretField(
-                saved = ytSaved,
-                replacing = ytReplacing,
-                onReplacingChange = { ytReplacing = it },
-                value = ytKey, onValueChange = { ytKey = it },
-                label = "API key",
-            )
-            Spacer(Modifier.height(10.dp))
-            AppField(
-                value = ytChannel, onValueChange = { ytChannel = it },
-                label = "Channel @handle or ID",
-            )
-        }
-
-        Card2 {
-            CardHeader(R.drawable.ic_facebook, "Facebook Page", "Graph API")
-            Spacer(Modifier.height(14.dp))
-            AppField(
-                value = fbPageId, onValueChange = { fbPageId = it },
-                label = "Page ID",
-                keyboardType = KeyboardType.Number,
-            )
-            Spacer(Modifier.height(10.dp))
-            SecretField(
-                saved = fbSaved,
-                replacing = fbReplacing,
-                onReplacingChange = { fbReplacing = it },
-                value = fbToken, onValueChange = { fbToken = it },
-                label = "Page access token",
-            )
-        }
-
-        Button(
-            enabled = !busy,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(54.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color(0xFF10132A)),
-            onClick = {
-                busy = true
-                // A blank secret field means "keep the saved one".
-                val current = Store.loadSettings(context)
-                saveFailed = !Store.saveSettings(
-                    context,
-                    Settings(ytKey.ifBlank { current.ytKey }, ytChannel, fbPageId, fbToken.ifBlank { current.fbToken }),
-                )
-                val saved = Store.loadSettings(context)
-                ytSaved = saved.ytKey.isNotBlank()
-                fbSaved = saved.fbToken.isNotBlank()
-                ytKey = ""
-                fbToken = ""
-                ytReplacing = false
-                fbReplacing = false
-                Scheduler.schedule(context)
-                scope.launch {
-                    stats = Repo.refreshAll(context)
-                    busy = false
-                }
-            },
-        ) {
-            if (busy) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
-                    color = Color(0xFF10132A),
-                )
-                Spacer(Modifier.width(10.dp))
-                Text("Refreshing…", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-            } else {
-                Text("Save & refresh", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-            }
-        }
-
-        if (saveFailed) {
-            Text(
-                "Your phone could not encrypt the key, so it was not saved. Please try again.",
-                color = Warn,
-                fontSize = 13.sp,
-                modifier = Modifier.padding(start = 4.dp),
-            )
-        }
+        if (!setupFirst) connectionsGroup()
 
         // ---- Help ----
+        Column(
+            modifier = Modifier.fillMaxWidth().bringIntoViewRequester(helpBring),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
         HelpHeader(expanded = helpOpen, onToggle = { helpOpen = !helpOpen })
 
         if (helpOpen) {
@@ -637,19 +853,20 @@ private fun SettingsScreen() {
 
         GuideCard(
             iconRes = R.drawable.ic_facebook,
-            title = "Renew Facebook token",
-            subtitle = "About 3 minutes. Only needed if Facebook stops updating.",
+            title = "Get or renew a Facebook token",
+            subtitle = "About 3 minutes. Needed at setup, and again if Facebook stops updating.",
             expanded = fbGuideOpen,
             onToggle = { fbGuideOpen = !fbGuideOpen },
         ) {
             Text(
-                "Your Meta app \"social-widget\" is already set up. You only need a new token.",
+                "You need a free Meta developer app (create one at developers.facebook.com if you do not have one). " +
+                    "If you already made one, you only need a new token.",
                 color = TextLo,
                 fontSize = 13.sp,
             )
             Step(
                 1,
-                "Open the Graph API Explorer. Meta App: social-widget. User or Page: User Token. " +
+                "Open the Graph API Explorer. Meta App: pick your app. User or Page: User Token. " +
                     "Add the permissions pages_show_list, pages_read_engagement and business_management, " +
                     "then tap Generate Access Token and approve your Page and business.",
                 linkLabel = "Open Graph API Explorer",
@@ -711,9 +928,12 @@ private fun SettingsScreen() {
             )
         }
         }
+        }
 
         Text(
-            "Your keys stay on this device, are never shown again after saving, and the app is protected by your screen lock. Android backup is off, and the app talks directly to Google and Meta.",
+            "Your keys stay on this device and are never shown again after saving" +
+                (if (lockOn) ", and the app is protected by your screen lock" else "") +
+                ". Android backup is off, and the app talks directly to Google and Meta.",
             color = TextLo,
             fontSize = 12.sp,
             textAlign = TextAlign.Center,
@@ -784,7 +1004,7 @@ private fun StatusChip(text: String, color: Color) {
 }
 
 @Composable
-private fun SectionLabel(text: String) {
+internal fun SectionLabel(text: String) {
     Text(
         text,
         color = TextLo,
@@ -796,7 +1016,7 @@ private fun SectionLabel(text: String) {
 }
 
 @Composable
-private fun Card2(content: @Composable ColumnScope.() -> Unit) {
+internal fun Card2(content: @Composable ColumnScope.() -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -948,14 +1168,18 @@ private fun StatTile(
     metrics: List<Metric>,
     title: String,
     posted: String,
+    insight: List<String>,
+    openLabel: String,
     onClick: () -> Unit,
+    onOpenPost: () -> Unit,
 ) {
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(20.dp))
             .background(Brush.linearGradient(gradient), RoundedCornerShape(20.dp))
             .border(1.dp, accent.copy(alpha = 0.35f), RoundedCornerShape(20.dp))
-            .clickable(enabled = configured, onClick = onClick)
+            // The tile opens the latest post; the "Open ›" label in the corner opens the dashboard.
+            .clickable(onClick = onOpenPost)
             .padding(14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -964,13 +1188,19 @@ private fun StatTile(
             Text(name, color = accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
             if (configured) {
                 Spacer(Modifier.weight(1f))
-                Text("Open ›", color = accent.copy(alpha = 0.85f), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    openLabel,
+                    color = accent.copy(alpha = 0.85f),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clickable(onClick = onClick).padding(start = 12.dp, top = 6.dp, bottom = 6.dp),
+                )
             }
         }
         Spacer(Modifier.height(12.dp))
         if (!configured) {
             Text("Not set up", color = TextHi, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-            Text("Add your keys below", color = TextLo, fontSize = 12.sp)
+            Text("Tap to add your keys", color = TextLo, fontSize = 12.sp)
         } else {
             Text(formatCount(big), color = TextHi, fontSize = 30.sp, fontWeight = FontWeight.Bold)
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -980,7 +1210,7 @@ private fun StatTile(
                     Spacer(Modifier.width(8.dp))
                     Text(
                         g,
-                        color = if ((growth ?: 0) > 0) Good else Color(0xFFFF8A80),
+                        color = if ((growth ?: 0) > 0) Good else Danger,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
@@ -1013,8 +1243,12 @@ private fun StatTile(
                 Spacer(Modifier.height(8.dp))
                 Text(posted, color = accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
             }
+            insight.forEachIndexed { i, line ->
+                Spacer(Modifier.height(if (i == 0 && posted.isBlank()) 8.dp else 2.dp))
+                Text(line, color = TextHi.copy(alpha = 0.9f), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            }
             if (title.isNotBlank()) {
-                Spacer(Modifier.height(if (posted.isBlank()) 8.dp else 2.dp))
+                Spacer(Modifier.height(if (posted.isBlank() && insight.isEmpty()) 8.dp else 2.dp))
                 Text(title, color = TextLo, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
@@ -1067,7 +1301,7 @@ private fun SwitchRow(title: String, subtitle: String, checked: Boolean, onChang
             checked = checked,
             onCheckedChange = onChange,
             colors = SwitchDefaults.colors(
-                checkedThumbColor = Color(0xFF10132A),
+                checkedThumbColor = OnAccent,
                 checkedTrackColor = Accent,
                 uncheckedThumbColor = TextLo,
                 uncheckedTrackColor = Panel2,
@@ -1183,6 +1417,116 @@ private fun Step(
                     border = androidx.compose.foundation.BorderStroke(1.dp, Line),
                 ) { Text(linkLabel, color = Accent, fontSize = 13.sp) }
             }
+        }
+    }
+}
+
+/** A settings section that folds away: tap the title row to open or close it. */
+@Composable
+internal fun SettingsGroup(
+    title: String,
+    summary: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    requester: BringIntoViewRequester? = null,
+    subtitle: String = "",
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (requester != null) Modifier.bringIntoViewRequester(requester) else Modifier),
+    ) {
+        // A full row that looks tappable, like the Help card, instead of a loose label.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(18.dp))
+                .background(Panel1, RoundedCornerShape(18.dp))
+                .border(1.dp, Line, RoundedCornerShape(18.dp))
+                .clickable(onClick = onToggle)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    title.lowercase().replaceFirstChar { it.uppercase() },
+                    color = TextHi,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                if (subtitle.isNotBlank()) Text(subtitle, color = TextLo, fontSize = 12.sp)
+            }
+            if (summary.isNotBlank()) {
+                Spacer(Modifier.width(8.dp))
+                Text(summary, color = Accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Spacer(Modifier.width(8.dp))
+            val turn by animateFloatAsState(if (expanded) 180f else 0f, label = "chevron")
+            Text("▾", color = TextLo, fontSize = 14.sp, modifier = Modifier.rotate(turn))
+        }
+        AnimatedVisibility(
+            visible = expanded,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically(),
+        ) {
+            Column(
+                modifier = Modifier.padding(top = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                content = content,
+            )
+        }
+    }
+}
+
+/** A small tappable line under a key field that opens the matching how-to guide. */
+@Composable
+private fun HowToLink(text: String, onClick: () -> Unit) {
+    Text(
+        text,
+        color = Accent,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier
+            .padding(top = 6.dp)
+            .clickable(onClick = onClick)
+            .padding(vertical = 6.dp),
+    )
+}
+
+/** A calm, non-alarming note (for example: you are offline). */
+@Composable
+private fun InfoNote(text: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Panel1, RoundedCornerShape(16.dp))
+            .border(1.dp, Line, RoundedCornerShape(16.dp))
+            .padding(14.dp),
+    ) {
+        Text(text, color = TextLo, fontSize = 13.sp)
+    }
+}
+
+/** An explicit refresh button (pull-down still works); shows progress while it runs. */
+@Composable
+private fun RefreshButton(busy: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(50)
+    Row(
+        modifier = Modifier
+            .clip(shape)
+            .background(Panel1, shape)
+            .border(1.dp, Line, shape)
+            .clickable(enabled = !busy, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (busy) {
+            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = Accent)
+            Spacer(Modifier.width(8.dp))
+            Text("Refreshing…", color = TextLo, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        } else {
+            Text("↻  Refresh", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         }
     }
 }

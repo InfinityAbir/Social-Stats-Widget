@@ -50,6 +50,62 @@ object Notifier {
             rise(c, "yt", "YouTube video", s.ytVideoId, s.ytVideoViews, s.ytVideoTitle, d.riseThreshold, now)
             rise(c, "fb", "Facebook reel", s.fbVideoId, s.fbVideoViews, s.fbVideoTitle, d.riseThreshold, now)
         }
+        if (d.notifyComments) {
+            comments(c, "yt", s.ytVideoId, s.ytComments, "YouTube video", s.ytVideoTitle)
+            comments(c, "fb", s.fbVideoId, s.fbComments, "Facebook reel", s.fbVideoTitle)
+        }
+        if (d.notifyStale) {
+            // No internet is temporary and not the user's doing, so it never counts as a failure.
+            stale(
+                c, "yt", "YouTube", s.ytError.takeUnless(::isOfflineError).orEmpty(), now,
+                "${s.ytError}. Check your API key and channel handle in the app.",
+            )
+            stale(
+                c, "fb", "Facebook", s.fbError.takeUnless(::isOfflineError).orEmpty(), now,
+                "${s.fbError}. Your Page token has probably expired: open the app and follow the renewal guide.",
+            )
+        }
+    }
+
+    /** A new comment on the latest video or reel. A first sighting or a different video says nothing. */
+    private fun comments(c: Context, p: String, id: String, count: Long, what: String, title: String) {
+        if (id.isBlank() || count < 0) return
+        val sp = Store.sp(c)
+        val prevId = sp.getString("cm_${p}_id", null)
+        val prevCount = if (sp.contains("cm_${p}_n")) sp.getLong("cm_${p}_n", -1) else null
+        val gained = newComments(prevId, prevCount, id, count)
+        sp.edit().putString("cm_${p}_id", id).putLong("cm_${p}_n", count).apply()
+        if (gained > 0) {
+            val head = if (gained == 1L) "New comment" else "$gained new comments"
+            post(
+                c, "cm_$p".hashCode(),
+                "$head on your $what",
+                (if (title.isBlank()) "" else "\"$title\" ") + "now has ${"%,d".format(Locale.US, count)} comments.",
+            )
+        }
+    }
+
+    /** A connection that keeps failing (expired token, bad key). Once per episode, after a few hours. */
+    private fun stale(c: Context, p: String, what: String, error: String, now: Long, text: String) {
+        val sp = Store.sp(c)
+        val step = staleStep(
+            hasError = error.isNotBlank(),
+            since = sp.getLong("st_${p}_since", 0),
+            notified = sp.getBoolean("st_${p}_n", false),
+            now = now,
+        )
+        sp.edit().putLong("st_${p}_since", step.since).putBoolean("st_${p}_n", step.notified).apply()
+        if (step.fire) post(c, "stale_$p".hashCode(), "$what stopped updating", text)
+    }
+
+    /**
+     * The "posting time is coming up" nudge, called by the reminder alarm. The title says how long is
+     * really left, and nothing is posted if the posting time has already passed.
+     */
+    fun postReminder(c: Context, slotAt: Long, now: Long = System.currentTimeMillis()) {
+        if (!shouldRemind(now, slotAt)) return
+        if (!NotificationManagerCompat.from(c).areNotificationsEnabled()) return
+        post(c, "reminder".hashCode(), reminderTitle(slotAt - now), reminderBody(minutesOfDay(slotAt)))
     }
 
     private fun milestone(c: Context, key: String, id: String, value: Long, what: String, title: String?) {

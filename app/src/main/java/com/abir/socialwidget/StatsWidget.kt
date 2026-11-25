@@ -46,9 +46,6 @@ import java.util.Locale
 
 private val TextMain = Color(0xFFFFFFFF)
 private val TextDim = Color(0xFFA9AEC2)
-private val YtRed = Color(0xFFFF5A4D)
-private val FbBlue = Color(0xFF5AA2FF)
-private val Warn = Color(0xFFFFB454)
 
 fun formatCount(n: Long): String = when {
     n < 0 -> "—"
@@ -58,9 +55,9 @@ fun formatCount(n: Long): String = when {
     else -> "%,d".format(Locale.US, n)
 }
 
-/** The widget's one spare line under the stats: "Posted 3h ago · title", whichever parts are on. */
-private fun widgetLine(posted: String, title: String): String =
-    listOf(posted, title).filter { it.isNotBlank() }.joinToString(" · ")
+/** The widget's one spare line under the stats: "Posted 3h ago · 2.1× usual · +120/h · title", whichever parts are on. */
+private fun widgetLine(posted: String, insight: String, title: String): String =
+    listOf(posted, insight, title).filter { it.isNotBlank() }.joinToString(" · ")
 
 private fun trim1(d: Double): String {
     val s = String.format(Locale.US, "%.1f", d)
@@ -76,7 +73,10 @@ class StatsWidget : GlanceAppWidget() {
             val stats = remember(tick) { Store.loadStats(context) }
             val display = remember(tick) { Store.loadDisplay(context) }
             val growth = remember(tick) { History.growth(context, stats) }
-            Content(configured, stats, display, growth)
+            val ytPosts = remember(tick) { Store.loadPosts(context, "yt") }
+            val fbPosts = remember(tick) { Store.loadPosts(context, "fb") }
+            val refreshing = remember(tick) { isRefreshing(Store.refreshingAt(context), System.currentTimeMillis()) }
+            Content(configured, stats, display, growth, ytPosts, fbPosts, refreshing)
         }
     }
 }
@@ -85,7 +85,10 @@ internal val GrowthUp = Color(0xFF59D68C)
 internal val GrowthDown = Color(0xFFFF8A80)
 
 @Composable
-private fun Content(configured: Configured, stats: Stats, display: Display, growth: Growth) {
+private fun Content(
+    configured: Configured, stats: Stats, display: Display, growth: Growth,
+    ytPosts: List<Post>, fbPosts: List<Post>, refreshing: Boolean,
+) {
     val context = LocalContext.current
     Box(
         modifier = GlanceModifier
@@ -109,7 +112,11 @@ private fun Content(configured: Configured, stats: Stats, display: Display, grow
                     growth = if (display.ytGrowth) growth.yt else null,
                     metrics = ytMetrics(stats, display),
                     title = widgetLine(
-                        if (display.ytPosted) postedAgo(stats.ytPostedAt) else "",
+                        if (display.ytPosted) postedAgo(stats.ytPostedAt).removePrefix("Posted ") else "",
+                        insightLine(
+                            stats.ytVideoViews, ytPosts, stats.ytVideoId, stats.ytPostedAt, stats.ytRate,
+                            display.ytVsAvg, display.ytSpeed, compact = true,
+                        ),
                         if (display.ytTitle) stats.ytVideoTitle else "",
                     ),
                     error = stats.ytError,
@@ -127,42 +134,56 @@ private fun Content(configured: Configured, stats: Stats, display: Display, grow
                     growth = if (display.fbGrowth) growth.fb else null,
                     metrics = fbMetrics(stats, display),
                     title = widgetLine(
-                        if (display.fbPosted) postedAgo(stats.fbPostedAt) else "",
+                        if (display.fbPosted) postedAgo(stats.fbPostedAt).removePrefix("Posted ") else "",
+                        insightLine(
+                            stats.fbVideoViews, fbPosts, stats.fbVideoId, stats.fbPostedAt, stats.fbRate,
+                            display.fbVsAvg, display.fbSpeed, compact = true,
+                        ),
                         if (display.fbTitle && stats.fbVideoTitle.isNotBlank()) "Reel · " + stats.fbVideoTitle else "",
                     ),
                     error = stats.fbError,
                 )
             }
-            Spacer(GlanceModifier.height(4.dp))
+            Spacer(GlanceModifier.height(2.dp))
+            // The whole bottom strip refreshes, not just the small label: a tap that lands near the button
+            // refreshes instead of opening the app. While a refresh runs the strip says so and ignores taps.
+            val strip = if (refreshing) GlanceModifier.fillMaxWidth()
+            else GlanceModifier.fillMaxWidth().clickable(actionRunCallback<RefreshAction>())
             Row(
-                modifier = GlanceModifier.fillMaxWidth(),
+                modifier = strip.padding(horizontal = 4.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.Vertical.CenterVertically,
             ) {
-                val time = if (stats.updatedAt > 0)
-                    "Updated " + SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(stats.updatedAt))
-                else "Not refreshed yet"
+                val time = when {
+                    refreshing -> "Updating your numbers…"
+                    stats.updatedAt > 0 ->
+                        "Updated " + SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(stats.updatedAt))
+                    else -> "Not refreshed yet"
+                }
                 Text(
                     text = time,
                     style = TextStyle(color = ColorProvider(TextDim), fontSize = 10.sp),
                     modifier = GlanceModifier.defaultWeight().padding(start = 4.dp),
                 )
-                // Separate tap target: refresh now.
                 Row(
                     modifier = GlanceModifier
-                        .clickable(actionRunCallback<RefreshAction>())
-                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                        .background(ImageProvider(R.drawable.btn_refresh))
+                        .padding(horizontal = 12.dp, vertical = 3.dp),
                     verticalAlignment = Alignment.Vertical.CenterVertically,
                 ) {
                     Image(
                         provider = ImageProvider(R.drawable.ic_refresh),
                         contentDescription = "Refresh",
                         modifier = GlanceModifier.size(11.dp),
-                        colorFilter = ColorFilter.tint(ColorProvider(TextDim)),
+                        colorFilter = ColorFilter.tint(ColorProvider(if (refreshing) TextDim else TextMain)),
                     )
-                    Spacer(GlanceModifier.width(3.dp))
+                    Spacer(GlanceModifier.width(5.dp))
                     Text(
-                        text = "Refresh",
-                        style = TextStyle(color = ColorProvider(TextDim), fontSize = 10.sp),
+                        text = if (refreshing) "Working…" else "Refresh",
+                        style = TextStyle(
+                            color = ColorProvider(if (refreshing) TextDim else TextMain),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Medium,
+                        ),
                     )
                 }
             }
@@ -288,7 +309,15 @@ private fun Panel(
 
 class RefreshAction : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
+        // Show "Updating…" at once so the tap visibly registered. Offline there is nothing to wait for.
+        if (isOnline(context)) Store.setRefreshingAt(context, System.currentTimeMillis())
         Scheduler.refreshNow(context)
+    }
+
+    private fun isOnline(context: Context): Boolean {
+        val cm = context.getSystemService(android.net.ConnectivityManager::class.java) ?: return true
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 }
 

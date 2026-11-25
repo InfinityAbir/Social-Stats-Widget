@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The posting-time picker, in the app's indigo instead of the system's teal. -->
+    <style name="PickerLight" parent="android:Theme.Material.Light.Dialog.Alert">
+        <item name="android:colorAccent">#4A5BD4</item>
+        <item name="android:colorControlActivated">#4A5BD4</item>
+    </style>
+
+    <style name="PickerDark" parent="android:Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">#7C8CF0</item>
+        <item name="android:colorControlActivated">#7C8CF0</item>
+    </style>
+</resources>
