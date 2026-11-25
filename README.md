@@ -98,7 +98,7 @@ I run a small content page, and I kept opening YouTube Studio and Meta Business 
 - Large subscriber and follower counts, formatted as `4,835`, `12.4K`, `1.2M`, with today's change (`▲ 16 today`)
 - Latest video or reel: views, comments, likes / reactions / shares, and one line such as `1h 33m ago · 0.7× usual · +807/h · title`
 - You choose which of these show (see *Display* below)
-- The whole bottom strip is the **Refresh** button. While it runs it says "Updating your numbers…" and ignores extra taps
+- The whole bottom strip is the **Refresh** button. While it runs the strip turns blue with a spinning icon and "Updating your numbers…", ignores extra taps, and goes back to normal only once the new numbers have arrived (a safety timer clears it if a refresh never finishes)
 - **Compact widget (2x1):** subscribers and followers with today's change
 - Gradient glass background that works on light and dark wallpapers. The widgets keep their dark look in every app theme
 - Tap the cards to open the app

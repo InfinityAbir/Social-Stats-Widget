@@ -86,6 +86,16 @@ fun velocityStep(prev: Sample?, prevRate: Long, id: String, views: Long, now: Lo
 /** A refresh that has been "running" longer than this is assumed lost (killed, no network), so the widget stops saying so. */
 const val REFRESH_STALE_MS = 90_000L
 
+/** A user-started refresh keeps its "Updating" state on screen at least this long, so a fast one is still noticed. */
+const val MIN_UPDATING_MS = 1_200L
+
+/** How much longer to keep "Updating" visible for a refresh that started at [startedAt] (0 = not user started). */
+fun remainingUpdatingMs(startedAt: Long, now: Long): Long =
+    if (startedAt <= 0 || now < startedAt) 0 else (MIN_UPDATING_MS - (now - startedAt)).coerceAtLeast(0)
+
+/** Whether a "Updating" state that began at [startedAt] has outlived any real refresh and must be cleared. */
+fun isStaleRefresh(startedAt: Long, now: Long): Boolean = startedAt > 0 && (now < startedAt || now - startedAt >= REFRESH_STALE_MS)
+
 /** Whether to show "Refreshing…" on the widget for a refresh started at [startedAt] (0 = none). */
 fun isRefreshing(startedAt: Long, now: Long): Boolean = startedAt > 0 && now - startedAt in 0 until REFRESH_STALE_MS
 

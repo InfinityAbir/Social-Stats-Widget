@@ -3,6 +3,7 @@ package com.abir.socialwidget
 import android.content.Context
 import androidx.glance.appwidget.updateAll
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -18,13 +19,20 @@ object Repo {
     suspend fun refreshAll(context: Context): Stats = withContext(NonCancellable) { refreshAllNow(context) }
 
     // NonCancellable: leaving the app mid-refresh must not drop the save and the widget redraw.
-    private suspend fun refreshAllNow(context: Context): Stats =
+    private suspend fun refreshAllNow(context: Context): Stats {
+        val app = context.applicationContext
         try {
-            refreshAllInner(context)
+            return refreshAllInner(app)
         } finally {
-            // Whatever happened, the widget's "Refreshing…" ends here.
-            Store.setRefreshingAt(context.applicationContext, 0)
+            // A refresh the user started from the widget keeps its "Updating" look for a moment even if it
+            // was very quick, then it ends here, whatever happened, and the widgets are redrawn with the
+            // new numbers and without the "Updating" state. That last redraw is what makes the end visible
+            // even when the widget's display session has gone idle.
+            delay(remainingUpdatingMs(Store.refreshingAt(app), System.currentTimeMillis()))
+            Store.setRefreshingAt(app, 0)
+            redrawWidgets(app)
         }
+    }
 
     private suspend fun refreshAllInner(context: Context): Stats {
         val app = context.applicationContext
@@ -91,7 +99,6 @@ object Repo {
         History.record(app, s)
         runCatching { Notifier.check(app, s, Store.loadDisplay(app)) }
         runCatching { Reminders.schedule(app) } // safety net: keeps the posting reminder armed
-        redrawWidgets(app)
         return s
     }
 

@@ -18,11 +18,13 @@ import androidx.glance.LocalContext
 import androidx.glance.action.ActionParameters
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
+import androidx.glance.appwidget.CircularProgressIndicator
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.provideContent
+import androidx.glance.appwidget.updateAll
 import androidx.glance.background
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
@@ -81,6 +83,7 @@ class StatsWidget : GlanceAppWidget() {
     }
 }
 
+internal val BusyAccent = Color(0xFF8C9EFF)
 internal val GrowthUp = Color(0xFF59D68C)
 internal val GrowthDown = Color(0xFFFF8A80)
 
@@ -161,26 +164,35 @@ private fun Content(
                 }
                 Text(
                     text = time,
-                    style = TextStyle(color = ColorProvider(TextDim), fontSize = 10.sp),
+                    style = TextStyle(
+                        color = ColorProvider(if (refreshing) BusyAccent else TextDim),
+                        fontSize = 10.sp,
+                        fontWeight = if (refreshing) FontWeight.Medium else FontWeight.Normal,
+                    ),
                     modifier = GlanceModifier.defaultWeight().padding(start = 4.dp),
                 )
                 Row(
                     modifier = GlanceModifier
-                        .background(ImageProvider(R.drawable.btn_refresh))
+                        .background(ImageProvider(if (refreshing) R.drawable.btn_refresh_busy else R.drawable.btn_refresh))
                         .padding(horizontal = 12.dp, vertical = 3.dp),
                     verticalAlignment = Alignment.Vertical.CenterVertically,
                 ) {
-                    Image(
-                        provider = ImageProvider(R.drawable.ic_refresh),
-                        contentDescription = "Refresh",
-                        modifier = GlanceModifier.size(11.dp),
-                        colorFilter = ColorFilter.tint(ColorProvider(if (refreshing) TextDim else TextMain)),
-                    )
+                    if (refreshing) {
+                        // A real, animated spinner, so it is clear something is happening.
+                        CircularProgressIndicator(modifier = GlanceModifier.size(12.dp), color = ColorProvider(BusyAccent))
+                    } else {
+                        Image(
+                            provider = ImageProvider(R.drawable.ic_refresh),
+                            contentDescription = "Refresh",
+                            modifier = GlanceModifier.size(11.dp),
+                            colorFilter = ColorFilter.tint(ColorProvider(TextMain)),
+                        )
+                    }
                     Spacer(GlanceModifier.width(5.dp))
                     Text(
-                        text = if (refreshing) "Working…" else "Refresh",
+                        text = if (refreshing) "Updating…" else "Refresh",
                         style = TextStyle(
-                            color = ColorProvider(if (refreshing) TextDim else TextMain),
+                            color = ColorProvider(if (refreshing) BusyAccent else TextMain),
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Medium,
                         ),
@@ -310,7 +322,14 @@ private fun Panel(
 class RefreshAction : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
         // Show "Updating…" at once so the tap visibly registered. Offline there is nothing to wait for.
-        if (isOnline(context)) Store.setRefreshingAt(context, System.currentTimeMillis())
+        // The widget is redrawn explicitly: relying on the saved flag alone only works while the widget's
+        // display session is still alive, which is why the tap used to look like it did nothing.
+        if (isOnline(context)) {
+            Store.setRefreshingAt(context, System.currentTimeMillis())
+            // Draw the busy state first, before any other bookkeeping, so the tap is answered as fast as possible.
+            StatsWidget().updateAll(context)
+            Scheduler.guardRefresh(context)
+        }
         Scheduler.refreshNow(context)
     }
 

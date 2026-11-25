@@ -21,7 +21,23 @@ class RefreshWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
     }
 }
 
+/**
+ * Safety net for the widget's "Updating" state. A refresh normally ends it itself, but if the work never
+ * ran (no network for a long time) or the process was killed, this clears it and redraws, so the widget
+ * can never stay stuck on "Updating".
+ */
+class RefreshGuardWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
+    override suspend fun doWork(): Result {
+        val app = applicationContext
+        if (isStaleRefresh(Store.refreshingAt(app), System.currentTimeMillis())) Store.setRefreshingAt(app, 0)
+        Repo.redrawWidgets(app)
+        return Result.success()
+    }
+}
+
 object Scheduler {
+    private const val GUARD = "stats_refresh_guard"
+
     private const val PERIODIC = "stats_periodic"
     private const val ONCE = "stats_once"
 
@@ -39,6 +55,14 @@ object Scheduler {
         val req = OneTimeWorkRequestBuilder<RefreshWorker>().setConstraints(online).build()
         WorkManager.getInstance(context)
             .enqueueUniqueWork(ONCE, ExistingWorkPolicy.REPLACE, req)
+    }
+
+    /** Arm the guard for a refresh the user just started. A newer tap replaces it. */
+    fun guardRefresh(context: Context) {
+        val req = OneTimeWorkRequestBuilder<RefreshGuardWorker>()
+            .setInitialDelay(REFRESH_STALE_MS + 5_000, TimeUnit.MILLISECONDS)
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(GUARD, ExistingWorkPolicy.REPLACE, req)
     }
 
     fun cancel(context: Context) {

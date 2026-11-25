@@ -290,6 +290,22 @@ class InsightsTest {
         assertFalse(isRefreshing(now + 10_000, now))   // a clock that went backwards must not stick
     }
 
+    @Test fun a_quick_user_refresh_still_shows_updating_for_a_moment() {
+        assertEquals(1_200L, remainingUpdatingMs(now, now))
+        assertEquals(700L, remainingUpdatingMs(now - 500, now))
+        assertEquals(0L, remainingUpdatingMs(now - 1_200, now))
+        assertEquals(0L, remainingUpdatingMs(now - 5_000, now))   // a slow one needs no extra wait
+        assertEquals(0L, remainingUpdatingMs(0, now))             // not started by the user
+        assertEquals(0L, remainingUpdatingMs(now + 10_000, now))  // clock went backwards
+    }
+
+    @Test fun a_stuck_updating_state_is_recognised() {
+        assertFalse(isStaleRefresh(0, now))
+        assertFalse(isStaleRefresh(now - 30_000, now))
+        assertTrue(isStaleRefresh(now - 90_000, now))
+        assertTrue(isStaleRefresh(now + 60_000, now))             // a start time in the future cannot be real
+    }
+
     // ---- history span ----
 
     private fun d(day: String, yo: Long, yc: Long, fo: Long, fc: Long) = History.Day(day, yo, yc, fo, fc)
